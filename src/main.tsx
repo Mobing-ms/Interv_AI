@@ -1,21 +1,2605 @@
-import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{BrowserRouter,useNavigate}from'react-router-dom';import{AnimatePresence,motion}from'framer-motion';import{ArrowUpRight,BrainCircuit,ChevronDown,ChevronRight,Clock3,LockKeyhole,Menu,Mic2,Play,ShieldCheck,Sparkles,Target,TrendingUp,X,Zap}from'lucide-react';import{Toaster,toast}from'sonner';import'./styles.css';
+import React, { useState, useEffect, useRef } from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter, useNavigate } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  BrainCircuit,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Clock3,
+  LockKeyhole,
+  Menu,
+  Mic2,
+  Play,
+  Plus,
+  ShieldCheck,
+  Sparkles,
+  Target,
+  Trash2,
+  TrendingUp,
+  X,
+  Zap,
+} from 'lucide-react';
+import { Toaster, toast } from 'sonner';
+import { api, ApiError, User, StructuredCV, CrossCheckFlag, ConfirmedProfile } from './api';
+import { AuthProvider, useAuth } from './authContext';
+import './styles.css';
 
-type Round='Technical'|'HR'|'Managerial';const rounds:Round[]=['Technical','HR','Managerial'];
-const sessions=[{round:'Technical',score:84,date:'Oct 08',time:'18 min',topic:'React architecture'},{round:'HR',score:78,date:'Oct 04',time:'14 min',topic:'Leadership'},{round:'Managerial',score:91,date:'Sep 29',time:'22 min',topic:'Prioritisation'},{round:'Technical',score:72,date:'Sep 24',time:'12 min',topic:'System design'}];
-function App(){const nav=useNavigate();const[path,setPath]=useState(location.pathname);const go=(p:string)=>{history.pushState({},'',p);setPath(p);window.scrollTo(0,0)};React.useEffect(()=>{const f=()=>setPath(location.pathname);addEventListener('popstate',f);return()=>removeEventListener('popstate',f)},[]);return <><Toaster theme="dark" position="top-right"/><AnimatePresence mode="wait"><motion.div key={path} initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0}} transition={{duration:.25}}>{path==='/'?<Landing go={go}/>:path==='/login'||path==='/signup'?<Auth go={go} signup={path==='/signup'}/>:path==='/onboarding'?<Onboarding go={go}/>:path==='/dashboard'?<Dashboard go={go}/>:path==='/interview/setup'?<Setup go={go}/>:path==='/interview/precheck'?<Precheck go={go}/>:path.startsWith('/interview/live')?<Live go={go}/>:path.startsWith('/interview/processing')?<Processing go={go}/>:path.startsWith('/report')?<Report go={go}/>:path==='/history'?<History go={go}/>:path==='/settings'?<Settings go={go}/>:<NotFound go={go}/>}</motion.div></AnimatePresence></>}
-function Shell({children,go}:{children:React.ReactNode;go:(p:string)=>void}){return <div className="shell"><header className="nav"><button className="brand" onClick={()=>go('/')}><span className="brand-mark"><BrainCircuit/></span>interv<span>ai</span></button><nav className="nav-links"><button onClick={()=>go('/dashboard')}>Dashboard</button><button onClick={()=>go('/history')}>History</button><button onClick={()=>go('/settings')}>Settings</button></nav><button className="avatar" onClick={()=>go('/settings')}>AK</button></header>{children}</div>}
-function Pill({children,onClick,outline=false}:{children:React.ReactNode;onClick?:()=>void;outline?:boolean}){return <button onClick={onClick} className={'pill '+(outline?'outline':'')}>{children}<span className="pill-arrow"><ArrowUpRight/></span></button>}
-function Landing({go}:{go:(p:string)=>void}){const[faq,setFaq]=useState<number|null>(null);return <div className="landing"><header className="nav landing-nav"><button className="brand" onClick={()=>go('/')}><span className="brand-mark"><BrainCircuit/></span>interv<span>ai</span></button><nav className="nav-links"><a href="#how">How it works</a><a href="#rounds">Rounds</a><a href="#faq">FAQ</a></nav><div className="nav-actions"><button className="text-button" onClick={()=>go('/login')}>Log in</button><Pill onClick={()=>go('/signup')}>Start practising</Pill></div></header><main><section className="hero"><div className="hero-copy"><div className="eyebrow"><span className="live-dot"/> AI interview practice, rethought</div><h1>Show up<br/><em>ready.</em></h1><p>Practice the conversations that move your career forward. IntervAI gives you signal-rich feedback on what you say, how you say it, and how you show up.</p><div className="hero-actions"><Pill onClick={()=>go('/signup')}>Start practising</Pill><button className="link-button" onClick={()=>document.getElementById('how')?.scrollIntoView({behavior:'smooth'})}><Play/> See how it works</button></div><div className="trust"><div className="avatars"><i>AM</i><i>RS</i><i>NP</i></div><span>Join 12,000+ ambitious candidates</span></div></div><div className="hero-art"><div className="orb-glow"/><div className="orb"><div className="orb-face"><span/><span/><b/></div><div className="orb-ring r1"/><div className="orb-ring r2"/></div><div className="floating-card score-float"><span>last session</span><strong>84</strong><small>+12% this week</small></div><div className="floating-card mic-float"><Mic2/><div><span>voice clarity</span><strong>Excellent</strong></div></div><div className="waveform">{Array.from({length:26},(_,i)=><i key={i} style={{height:`${18+Math.sin(i*1.7)*14+Math.random()*18}px`}}/>)}</div></div></section><div className="marquee"><span>TECHNICAL</span><b>✦</b><span>BEHAVIOURAL</span><b>✦</b><span>LEADERSHIP</span><b>✦</b><span>COMMUNICATION</span><b>✦</b><span>TECHNICAL</span></div><section className="feature-row"><Feature n="01" title="Real presence" text="Camera, voice and words — measured together." icon={<Target/>}/><Feature n="02" title="Useful signal" text="Know exactly what to keep, and what to change." icon={<Sparkles/>}/><Feature n="03" title="Your pace" text="Adaptive questions that meet you where you are." icon={<Zap/>}/><Feature n="04" title="Visible progress" text="A practice loop built around your next opportunity." icon={<TrendingUp/>}/></section><section id="how" className="section how"><div className="section-label">THE METHOD <span>↓</span></div><div className="section-heading"><h2>Less guessing.<br/><em>More knowing.</em></h2><p>Every session is designed to feel like the real thing — with a little more room to learn.</p></div><div className="steps">{['Set your signal','Meet your interviewer','Think out loud','Get the read','Practice forward'].map((x,i)=><button className="step" key={x} onClick={()=>toast.success(`${x}: step ${i+1} selected`)}><span>0{i+1}</span><strong>{x}</strong><ChevronRight/></button>)}</div></section><section id="rounds" className="section"><div className="section-label">CHOOSE YOUR ROUND <span>↓</span></div><div className="round-grid">{rounds.map((r,i)=><button className="round-card" key={r} onClick={()=>go('/signup')}><span>0{i+1}</span><div><h3>{r}</h3><p>{i===0?'Systems, code and technical depth.':i===1?'Your story, values and motivation.':'Decisions, teams and strategic thinking.'}</p></div><ArrowUpRight/></button>)}</div></section><section id="faq" className="section faq"><div className="section-heading"><h2>Good questions<br/><em>deserve answers.</em></h2></div>{['How does the AI interviewer work?','What does IntervAI measure?','Can I use it for a specific role?','Is my recording private?'].map((q,i)=><div className="faq-item" key={q}><button onClick={()=>setFaq(faq===i?null:i)}><span>0{i+1}</span>{q}<ChevronDown className={faq===i?'rotate':''}/></button>{faq===i&&<p>IntervAI listens to your answer, evaluates clarity and substance, then turns the moment into practical feedback you can use immediately.</p>}</div>)}</section><section className="final-cta"><div><span className="eyebrow">YOUR NEXT INTERVIEW STARTS HERE</span><h2>Ready when<br/><em>you are.</em></h2></div><Pill onClick={()=>go('/signup')}>Start practising</Pill></section></main><footer><button className="brand" onClick={()=>go('/')}><span className="brand-mark"><BrainCircuit/></span>interv<span>ai</span></button><span>© 2025 IntervAI. Built for better conversations.</span></footer></div>}
-function Feature({n,title,text,icon}:{n:string;title:string;text:string;icon:React.ReactNode}){return <div className="feature"><span className="feature-number">#{n}</span><div className="feature-icon">{icon}</div><h3>{title}</h3><p>{text}</p></div>}
-function Auth({go,signup}:{go:(p:string)=>void;signup:boolean}){const[email,setEmail]=useState('');const[password,setPassword]=useState('');return <div className="auth-page"><div className="auth-visual"><button className="brand" onClick={()=>go('/')}><span className="brand-mark"><BrainCircuit/></span>interv<span>ai</span></button><div><span className="eyebrow">THE BETTER INTERVIEW LOOP</span><h1>Practice with<br/><em>presence.</em></h1></div><p>Sharper answers. Calmer delivery. A clearer read on what comes next.</p></div><div className="auth-form"><button className="mobile-brand brand" onClick={()=>go('/')}><span className="brand-mark"><BrainCircuit/></span>interv<span>ai</span></button><span className="eyebrow">{signup?'CREATE YOUR ACCOUNT':'WELCOME BACK'}</span><h2>{signup?'Start your practice loop.':'Pick up where you left off.'}</h2><p className="muted">{signup?'Your first session is on us. No credit card required.':'Your progress is waiting.'}</p>{signup&&<label>Full name<input placeholder="Alex Kumar"/></label>}<label>Email<input value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" type="email"/></label><label>Password<input value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 8 characters" type="password"/></label>{signup&&<label>Confirm password<input placeholder="Repeat your password" type="password"/></label>}<Pill onClick={()=>{if(!email||!password){toast.error('Please complete all fields');return}toast.success(signup?'Account created':'Welcome back');go(signup?'/onboarding':'/dashboard')}}>{signup?'Create account':'Log in'}</Pill><button className="google" onClick={()=>{toast.success('Signed in with Google');go('/dashboard')}}>Continue with Google</button>{!signup&&<button className="forgot" onClick={()=>toast.success('Reset link sent — check your inbox')}>Forgot password?</button>}<p className="auth-switch">{signup?'Already have an account?':'New to IntervAI?'} <button onClick={()=>go(signup?'/login':'/signup')}>{signup?'Log in':'Create an account'}</button></p></div></div>}
-function Onboarding({go}:{go:(p:string)=>void}){const[step,setStep]=useState(1);return <Shell go={go}><main className="onboarding"><div className="eyebrow">PROFILE SETUP · 0{step} / 04</div><div className="progress"><i style={{width:`${step*25}%`}}/></div><h1>Let&apos;s make this<br/><em>specific to you.</em></h1><p className="lead">A few details help us build better questions and sharper feedback.</p><div className="form-card">{step===1&&<><h2>Tell us about your education</h2><div className="form-grid"><label>Degree<select><option>Bachelor&apos;s degree</option><option>Master&apos;s degree</option></select></label><label>Branch<input placeholder="Computer Science"/></label><label>College<input placeholder="Your college"/></label><label>Graduation year<select><option>2025</option><option>2026</option></select></label></div></>}{step===2&&<><h2>What are you aiming for?</h2><div className="form-grid"><label>Target role<input placeholder="e.g. Frontend Engineer"/></label><label>Company type<select><option>Product</option><option>Startup</option><option>MNC</option></select></label><label>Experience level<select><option>Fresher</option><option>Student</option><option>1–3 years</option></select></label></div><label>Job description <textarea placeholder="Paste a job description for more tailored practice (optional)"/></label></>}{step===3&&<><h2>Bring your CV into the room</h2><div className="upload" onClick={()=>toast.success('CV uploaded — parsing your experience')}><LockKeyhole/><strong>Drop your CV here, or browse</strong><span>PDF or DOCX · Max 5 MB</span></div><div className="parse-list"><span>✓ Extracting your experience</span><span>✓ Finding your strongest signals</span><span>✓ Structuring your practice profile</span></div></>}{step===4&&<><h2>Review your practice profile</h2><div className="chips"><span>React <X/></span><span>TypeScript <X/></span><span>System design <X/></span><button onClick={()=>toast.success('Skill added')}>+ Add skill</button></div><div className="review-row"><strong>Target role</strong><span>Frontend Engineer</span><button>Edit</button></div><div className="review-row"><strong>Experience</strong><span>Fresher · Product</span><button>Edit</button></div></>}<div className="wizard-actions">{step>1&&<button className="secondary" onClick={()=>setStep(step-1)}>Back</button>}<Pill onClick={()=>step<4?setStep(step+1):go('/dashboard')}>{step<4?'Continue':'Confirm and go to dashboard'}</Pill></div></div></main></Shell>}
-function Dashboard({go}:{go:(p:string)=>void}){return <Shell go={go}><main className="app-main"><div className="page-intro"><div><span className="eyebrow">THURSDAY, OCTOBER 10</span><h1>Good morning, <em>Alex.</em></h1><p>Small reps make confident answers.</p></div><Pill onClick={()=>go('/interview/setup')}>Start new interview</Pill></div><div className="dash-grid"><div className="score-card"><div><span className="eyebrow">LAST SESSION · TECHNICAL</span><h2>Strong signal.</h2><p>Your clearest session yet. Let&apos;s build on it.</p></div><div className="score-ring"><strong>84</strong><span>/100</span></div></div><div className="stat-card"><span className="eyebrow">PRACTICE STREAK</span><strong>6 <small>days</small></strong><p>Best: 12 days</p><div className="streak-bars">{[1,1,1,1,1,1,0].map((x,i)=><i className={x?'active':''} key={i}/>)}</div></div></div><div className="section-head"><h2>Your practice rhythm</h2><button onClick={()=>go('/history')}>View history <ArrowUpRight/></button></div><div className="chart-card"><div className="chart-bars">{[48,62,55,73,68,84,78].map((h,i)=><div key={i}><i style={{height:`${h}%`}}/><span>{['Sep 24','Sep 29','Oct 01','Oct 04','Oct 06','Oct 08','Today'][i]}</span></div>)}</div></div><div className="section-head"><h2>Recent sessions</h2><button onClick={()=>go('/history')}>See all <ArrowUpRight/></button></div><div className="session-list">{sessions.map(s=><button className="session-row" key={s.date} onClick={()=>go('/report/1')}><span className="round-dot">{s.round[0]}</span><div><strong>{s.round}</strong><small>{s.topic} · {s.date}</small></div><b>{s.score}</b><ChevronRight/></button>)}</div><div className="next-card"><div><span className="eyebrow">NEXT BEST REP</span><h2>Practice your opening.</h2><p>Your content is strong. A crisp first 30 seconds will make it land.</p></div><Pill onClick={()=>go('/interview/setup')}>Practise this</Pill></div></main></Shell>}
-function Setup({go}:{go:(p:string)=>void}){const[selected,setSelected]=useState<Round>('Technical');return <Shell go={go}><main className="app-main narrow"><div className="page-intro"><div><span className="eyebrow">NEW INTERVIEW</span><h1>Choose your <em>challenge.</em></h1><p>We&apos;ll tune the room to where you want to grow.</p></div></div><div className="setup-layout"><div><h3>Round type</h3><div className="round-select">{rounds.map(r=><button className={selected===r?'selected':''} onClick={()=>setSelected(r)} key={r}><span>{r==='Technical'?'⌘':r==='HR'?'◌':'◈'}</span><strong>{r}</strong><small>{r==='Technical'?'Problem solving & systems':r==='HR'?'Story & motivation':'Strategy & leadership'}</small></button>)}</div><div className="settings-card"><label>Difficulty <select><option>Medium</option><option>Easy</option><option>Hard</option></select></label><label>Duration <select><option>20 minutes</option><option>10 minutes</option><option>30 minutes</option></select></label><label className="toggle-row">Pressure mode <input type="checkbox" onChange={()=>toast.success('Pressure mode updated')}/></label></div></div><aside className="summary"><span className="eyebrow">YOUR SESSION</span><h2>{selected} round</h2><p>10 adaptive questions · approx. 20 min</p><div className="topic-list">{['Communication','React architecture','Problem solving','Clarity'].map(t=><span key={t}>{t} <X/></span>)}</div><Pill onClick={()=>go('/interview/precheck')}>Continue to system check</Pill></aside></div></main></Shell>}
-function Precheck({go}:{go:(p:string)=>void}){const[ready,setReady]=useState(false);return <Shell go={go}><main className="app-main narrow"><div className="page-intro"><div><span className="eyebrow">SYSTEM CHECK</span><h1>Make sure you&apos;re <em>ready.</em></h1><p>A quick check of your camera, mic and connection.</p></div></div><div className="precheck-grid"><div className="camera-box"><div className="face-guide"/><span className="camera-label">CAMERA PREVIEW</span></div><div className="checks">{[['Camera','Face detected'],['Microphone','Signal is clear'],['Connection','Excellent · 48 Mbps']].map(x=><div className="check" key={x[0]}><ShieldCheck/><div><strong>{x[0]}</strong><small>{x[1]}</small></div><b>PASS</b></div>)}<label className="consent"><input type="checkbox" onChange={e=>setReady(e.target.checked)}/> I consent to recording and analysis for this session.</label><Pill onClick={()=>ready?go('/interview/live/1'):toast.error('Please give consent to continue')}>Start interview</Pill><button className="secondary" onClick={()=>go('/interview/setup')}>Back to setup</button></div></div></main></Shell>}
-function Live({go}:{go:(p:string)=>void}){const[muted,setMuted]=useState(false);const[hint,setHint]=useState(false);return <Shell go={go}><main className="live"><div className="live-top"><span className="eyebrow">TECHNICAL · QUESTION 04 / 10</span><button className="end" onClick={()=>go('/interview/processing/1')}>End interview <X/></button></div><div className="live-center"><div className="interviewer"><div className="orb small"><div className="orb-face"><span/><span/><b/></div></div><span className="eyebrow">LISTENING</span></div><h1>Walk me through a system you&apos;ve<br/><em>designed for scale.</em></h1><p className="caption">Take your time. Think out loud.</p><div className="live-actions"><button onClick={()=>setMuted(!muted)} className={muted?'active':''}><Mic2/> {muted?'Unmute':'Mute'}</button><button onClick={()=>toast.success('Question repeated')}><ChevronDown/> Repeat question</button><button onClick={()=>setHint(!hint)}><Sparkles/> Hint</button><Pill onClick={()=>toast.success('Answer submitted — next question loading')}>Done answering</Pill></div>{hint&&<div className="hint">Try structuring your answer around trade-offs, constraints and the outcome.</div>}</div><div className="metrics"><div><span>CONFIDENCE</span><strong>82%</strong></div><div><span>EYE CONTACT</span><strong>76%</strong></div><div><span>SPEAKING PACE</span><strong>142 <small>WPM</small></strong></div></div></main></Shell>}
-function Processing({go}:{go:(p:string)=>void}){React.useEffect(()=>{const t=setTimeout(()=>go('/report/1'),1800);return()=>clearTimeout(t)},[]);return <Shell go={go}><main className="processing"><div className="orb small"><div className="orb-face"><span/><span/><b/></div></div><span className="eyebrow">SESSION COMPLETE</span><h1>Making sense<br/><em>of your signal.</em></h1><div className="process-list">{['Transcribing your answers','Analysing speech patterns','Scoring your responses','Writing your report'].map((x,i)=><div key={x}><span>✓</span>{x}<small>{i<2?'COMPLETE':'IN PROGRESS'}</small></div>)}</div><button className="secondary" onClick={()=>go('/dashboard')}>Cancel and return</button></main></Shell>}
-function Report({go}:{go:(p:string)=>void}){const[open,setOpen]=useState(0);return <Shell go={go}><main className="app-main"><div className="report-header"><div><span className="eyebrow">TECHNICAL ROUND · OCT 08, 2025</span><h1>Your signal is <em>strong.</em></h1><p>18 min session · 10 questions · Adaptive difficulty</p></div><div className="report-actions"><button onClick={()=>toast.success('Report link copied')}>Share</button><Pill onClick={()=>toast.success('PDF export prepared')}>Download PDF</Pill></div></div><div className="report-overview"><div className="score-ring large"><strong>84</strong><span>OVERALL SCORE</span></div><div className="subscores">{[['Content','91'],['Speech confidence','78'],['Body language','82'],['Communication','86']].map(x=><div key={x[0]}><span>{x[0]}</span><strong>{x[1]}</strong><i><b style={{width:`${x[1]}%`}}/></i></div>)}</div></div><div className="section-head"><h2>Question breakdown</h2><button onClick={()=>toast.success('Showing all dimensions')}>Compare previous <ArrowUpRight/></button></div><div className="question-list">{['Tell me about a system you designed for scale.','How do you handle a disagreement with a teammate?','What trade-off would you make under pressure?'].map((q,i)=><div className="question" key={q}><button onClick={()=>setOpen(open===i?-1:i)}><span>0{i+1}</span><strong>{q}</strong><b>{[91,78,84][i]}</b><ChevronDown className={open===i?'rotate':''}/></button>{open===i&&<div className="answer"><span className="eyebrow">YOUR TRANSCRIPT</span><p>I&apos;d start by clarifying the constraints and the users we need to serve. From there, I&apos;d think through the trade-offs...</p><div className="feedback"><strong>Good structure</strong><span>Your answer was clear and grounded in a real decision. Add a measurable outcome next time.</span></div></div>}</div>)}</div><div className="next-card"><div><span className="eyebrow">KEEP THE MOMENTUM</span><h2>One more rep?</h2><p>Try a managerial round to practise your strategic thinking.</p></div><Pill onClick={()=>go('/interview/setup')}>Next round</Pill></div></main></Shell>}
-function History({go}:{go:(p:string)=>void}){return <Shell go={go}><main className="app-main"><div className="page-intro"><div><span className="eyebrow">YOUR PRACTICE LOG</span><h1>Every rep <em>counts.</em></h1><p>Five sessions, one clearer signal.</p></div><button className="secondary" onClick={()=>toast.success('CSV export prepared')}>Export all as CSV</button></div><div className="history-tabs"><button className="active">All sessions</button><button>Technical</button><button>HR</button><button>Managerial</button></div><div className="session-list history-list">{sessions.map((s,i)=><button className="session-row" key={s.date} onClick={()=>go('/report/1')}><span className="round-dot">0{i+1}</span><div><strong>{s.round} round</strong><small>{s.topic} · {s.date} · {s.time}</small></div><b>{s.score}<small>/100</small></b><ChevronRight/></button>)}</div></main></Shell>}
-function Settings({go}:{go:(p:string)=>void}){const[t,setT]=useState('Profile');return <Shell go={go}><main className="app-main settings"><div className="page-intro"><div><span className="eyebrow">YOUR SPACE</span><h1>Settings & <em>preferences.</em></h1></div></div><div className="settings-layout"><nav>{['Profile','CV','Preferences','Privacy'].map(x=><button className={t===x?'active':''} onClick={()=>setT(x)} key={x}>{x}</button>)}<button className="logout" onClick={()=>{toast.success('Logged out');go('/')}}>Log out</button></nav><div className="settings-panel"><span className="eyebrow">{t.toUpperCase()}</span><h2>{t==='Profile'?'Your practice profile':t==='CV'?'Your current CV':t==='Preferences'?'Make it feel like yours':'Control your data'}</h2>{t==='Privacy'?<><p className="muted">Your recordings and analysis stay yours.</p><button className="danger" onClick={()=>toast.success('All recordings deleted')}>Delete all my recordings</button><button className="danger" onClick={()=>{toast.success('Account data cleared');go('/')}}>Delete my account</button></>:<><label>Name<input defaultValue="Alex Kumar"/></label><label>Target role<input defaultValue="Frontend Engineer"/></label><label className="toggle-row">Interviewer voice <input type="checkbox" defaultChecked/></label><Pill onClick={()=>toast.success('Settings saved')}>Save changes</Pill></>}</div></div></main></Shell>}
-function NotFound({go}:{go:(p:string)=>void}){return <Shell go={go}><main className="not-found"><span className="eyebrow">ERROR 404</span><h1>Wrong <em>room.</em></h1><p>This page doesn&apos;t exist, but your next great answer might.</p><Pill onClick={()=>go('/')}>Back home</Pill></main></Shell>}
-createRoot(document.getElementById('root')!).render(<BrowserRouter><App/></BrowserRouter>);
+type Round = 'Technical' | 'HR' | 'Managerial';
+const rounds: Round[] = ['Technical', 'HR', 'Managerial'];
+const sessions = [
+  { round: 'Technical', score: 84, date: 'Oct 08', time: '18 min', topic: 'React architecture' },
+  { round: 'HR', score: 78, date: 'Oct 04', time: '14 min', topic: 'Leadership' },
+  { round: 'Managerial', score: 91, date: 'Sep 29', time: '22 min', topic: 'Prioritisation' },
+  { round: 'Technical', score: 72, date: 'Sep 24', time: '12 min', topic: 'System design' },
+];
+
+function ProtectedRoute({ children, go }: { children: React.ReactNode; go: (p: string) => void }) {
+  const { user, isLoading } = useAuth();
+
+  useEffect(() => {
+    if (!isLoading && !user) {
+      toast.error('Please log in to continue');
+      go('/login');
+    }
+  }, [isLoading, user, go]);
+
+  if (isLoading) {
+    return (
+      <div style={{ display: 'grid', placeItems: 'center', minHeight: '100vh', color: '#9aa3b2', fontFamily: 'DM Sans, sans-serif' }}>
+        <div>Loading your session...</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  return <>{children}</>;
+}
+
+function App() {
+  const nav = useNavigate();
+  const [path, setPath] = useState(location.pathname);
+  const go = (p: string) => {
+    history.pushState({}, '', p);
+    setPath(p);
+    window.scrollTo(0, 0);
+  };
+
+  useEffect(() => {
+    const f = () => setPath(location.pathname);
+    addEventListener('popstate', f);
+    return () => removeEventListener('popstate', f);
+  }, []);
+
+  return (
+    <AuthProvider>
+      <Toaster theme="dark" position="top-right" />
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={path}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.25 }}
+        >
+          {path === '/' ? (
+            <Landing go={go} />
+          ) : path === '/login' || path === '/signup' ? (
+            <Auth go={go} signup={path === '/signup'} />
+          ) : path === '/onboarding' ? (
+            <ProtectedRoute go={go}>
+              <Onboarding go={go} />
+            </ProtectedRoute>
+          ) : path === '/dashboard' ? (
+            <ProtectedRoute go={go}>
+              <Dashboard go={go} />
+            </ProtectedRoute>
+          ) : path === '/interview/setup' ? (
+            <ProtectedRoute go={go}>
+              <Setup go={go} />
+            </ProtectedRoute>
+          ) : path === '/interview/precheck' ? (
+            <ProtectedRoute go={go}>
+              <Precheck go={go} />
+            </ProtectedRoute>
+          ) : path.startsWith('/interview/live') ? (
+            <ProtectedRoute go={go}>
+              <Live go={go} />
+            </ProtectedRoute>
+          ) : path.startsWith('/interview/processing') ? (
+            <ProtectedRoute go={go}>
+              <Processing go={go} />
+            </ProtectedRoute>
+          ) : path.startsWith('/report') ? (
+            <ProtectedRoute go={go}>
+              <Report go={go} />
+            </ProtectedRoute>
+          ) : path === '/history' ? (
+            <ProtectedRoute go={go}>
+              <History go={go} />
+            </ProtectedRoute>
+          ) : path === '/settings' ? (
+            <ProtectedRoute go={go}>
+              <Settings go={go} />
+            </ProtectedRoute>
+          ) : (
+            <NotFound go={go} />
+          )}
+        </motion.div>
+      </AnimatePresence>
+    </AuthProvider>
+  );
+}
+
+function Shell({ children, go }: { children: React.ReactNode; go: (p: string) => void }) {
+  const { user } = useAuth();
+  const initials = user?.name
+    ? user.name
+        .split(' ')
+        .filter(Boolean)
+        .map((n) => n[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase()
+    : 'AK';
+
+  return (
+    <div className="shell">
+      <header className="nav">
+        <button className="brand" onClick={() => go('/')}>
+          <span className="brand-mark">
+            <BrainCircuit />
+          </span>
+          interv<span>ai</span>
+        </button>
+        <nav className="nav-links">
+          <button onClick={() => go('/dashboard')}>Dashboard</button>
+          <button onClick={() => go('/history')}>History</button>
+          <button onClick={() => go('/settings')}>Settings</button>
+        </nav>
+        <button className="avatar" onClick={() => go('/settings')}>
+          {initials}
+        </button>
+      </header>
+      {children}
+    </div>
+  );
+}
+
+function Pill({
+  children,
+  onClick,
+  outline = false,
+  disabled = false,
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  outline?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      className={'pill ' + (outline ? 'outline ' : '') + (disabled ? 'btn-disabled' : '')}
+    >
+      {children}
+      <span className="pill-arrow">
+        <ArrowUpRight />
+      </span>
+    </button>
+  );
+}
+
+function Landing({ go }: { go: (p: string) => void }) {
+  const [faq, setFaq] = useState<number | null>(null);
+  return (
+    <div className="landing">
+      <header className="nav landing-nav">
+        <button className="brand" onClick={() => go('/')}>
+          <span className="brand-mark">
+            <BrainCircuit />
+          </span>
+          interv<span>ai</span>
+        </button>
+        <nav className="nav-links">
+          <a href="#how">How it works</a>
+          <a href="#rounds">Rounds</a>
+          <a href="#faq">FAQ</a>
+        </nav>
+        <div className="nav-actions">
+          <button className="text-button" onClick={() => go('/login')}>
+            Log in
+          </button>
+          <Pill onClick={() => go('/signup')}>Start practising</Pill>
+        </div>
+      </header>
+      <main>
+        <section className="hero">
+          <div className="hero-copy">
+            <div className="eyebrow">
+              <span className="live-dot" /> AI interview practice, rethought
+            </div>
+            <h1>
+              Show up<br />
+              <em>ready.</em>
+            </h1>
+            <p>
+              Practice the conversations that move your career forward. IntervAI gives you signal-rich feedback on what you say, how you say it, and how you show up.
+            </p>
+            <div className="hero-actions">
+              <Pill onClick={() => go('/signup')}>Start practising</Pill>
+              <button className="link-button" onClick={() => document.getElementById('how')?.scrollIntoView({ behavior: 'smooth' })}>
+                <Play /> See how it works
+              </button>
+            </div>
+            <div className="trust">
+              <div className="avatars">
+                <i>AM</i>
+                <i>RS</i>
+                <i>NP</i>
+              </div>
+              <span>Join 12,000+ ambitious candidates</span>
+            </div>
+          </div>
+          <div className="hero-art">
+            <div className="orb-glow" />
+            <div className="orb">
+              <div className="orb-face">
+                <span />
+                <span />
+                <b />
+              </div>
+              <div className="orb-ring r1" />
+              <div className="orb-ring r2" />
+            </div>
+            <div className="floating-card score-float">
+              <span>last session</span>
+              <strong>84</strong>
+              <small>+12% this week</small>
+            </div>
+            <div className="floating-card mic-float">
+              <Mic2 />
+              <div>
+                <span>voice clarity</span>
+                <strong>Excellent</strong>
+              </div>
+            </div>
+            <div className="waveform">
+              {Array.from({ length: 26 }, (_, i) => (
+                <i key={i} style={{ height: `${18 + Math.sin(i * 1.7) * 14 + Math.random() * 18}px` }} />
+              ))}
+            </div>
+          </div>
+        </section>
+        <div className="marquee">
+          <span>TECHNICAL</span>
+          <b>✦</b>
+          <span>BEHAVIOURAL</span>
+          <b>✦</b>
+          <span>LEADERSHIP</span>
+          <b>✦</b>
+          <span>COMMUNICATION</span>
+          <b>✦</b>
+          <span>TECHNICAL</span>
+        </div>
+        <section className="feature-row">
+          <Feature n="01" title="Real presence" text="Camera, voice and words — measured together." icon={<Target />} />
+          <Feature n="02" title="Useful signal" text="Know exactly what to keep, and what to change." icon={<Sparkles />} />
+          <Feature n="03" title="Your pace" text="Adaptive questions that meet you where you are." icon={<Zap />} />
+          <Feature n="04" title="Visible progress" text="A practice loop built around your next opportunity." icon={<TrendingUp />} />
+        </section>
+        <section id="how" className="section how">
+          <div className="section-label">
+            THE METHOD <span>↓</span>
+          </div>
+          <div className="section-heading">
+            <h2>
+              Less guessing.<br />
+              <em>More knowing.</em>
+            </h2>
+            <p>Every session is designed to feel like the real thing — with a little more room to learn.</p>
+          </div>
+          <div className="steps">
+            {['Set your signal', 'Meet your interviewer', 'Think out loud', 'Get the read', 'Practice forward'].map((x, i) => (
+              <button className="step" key={x} onClick={() => toast.success(`${x}: step ${i + 1} selected`)}>
+                <span>0{i + 1}</span>
+                <strong>{x}</strong>
+                <ChevronRight />
+              </button>
+            ))}
+          </div>
+        </section>
+        <section id="rounds" className="section">
+          <div className="section-label">
+            CHOOSE YOUR ROUND <span>↓</span>
+          </div>
+          <div className="round-grid">
+            {rounds.map((r, i) => (
+              <button className="round-card" key={r} onClick={() => go('/signup')}>
+                <span>0{i + 1}</span>
+                <div>
+                  <h3>{r}</h3>
+                  <p>
+                    {i === 0
+                      ? 'Systems, code and technical depth.'
+                      : i === 1
+                      ? 'Your story, values and motivation.'
+                      : 'Decisions, teams and strategic thinking.'}
+                  </p>
+                </div>
+                <ArrowUpRight />
+              </button>
+            ))}
+          </div>
+        </section>
+        <section id="faq" className="section faq">
+          <div className="section-heading">
+            <h2>
+              Good questions<br />
+              <em>deserve answers.</em>
+            </h2>
+          </div>
+          {['How does the AI interviewer work?', 'What does IntervAI measure?', 'Can I use it for a specific role?', 'Is my recording private?'].map(
+            (q, i) => (
+              <div className="faq-item" key={q}>
+                <button onClick={() => setFaq(faq === i ? null : i)}>
+                  <span>0{i + 1}</span>
+                  {q}
+                  <ChevronDown className={faq === i ? 'rotate' : ''} />
+                </button>
+                {faq === i && (
+                  <p>
+                    IntervAI listens to your answer, evaluates clarity and substance, then turns the moment into practical feedback you can use immediately.
+                  </p>
+                )}
+              </div>
+            )
+          )}
+        </section>
+        <section className="final-cta">
+          <div>
+            <span className="eyebrow">YOUR NEXT INTERVIEW STARTS HERE</span>
+            <h2>
+              Ready when<br />
+              <em>you are.</em>
+            </h2>
+          </div>
+          <Pill onClick={() => go('/signup')}>Start practising</Pill>
+        </section>
+      </main>
+      <footer>
+        <button className="brand" onClick={() => go('/')}>
+          <span className="brand-mark">
+            <BrainCircuit />
+          </span>
+          interv<span>ai</span>
+        </button>
+        <span>© 2025 IntervAI. Built for better conversations.</span>
+      </footer>
+    </div>
+  );
+}
+
+function Feature({ n, title, text, icon }: { n: string; title: string; text: string; icon: React.ReactNode }) {
+  return (
+    <div className="feature">
+      <span className="feature-number">#{n}</span>
+      <div className="feature-icon">{icon}</div>
+      <h3>{title}</h3>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+function Auth({ go, signup }: { go: (p: string) => void; signup: boolean }) {
+  const { setUser } = useAuth();
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [networkError, setNetworkError] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+
+  useEffect(() => {
+    setFieldErrors({});
+    setNetworkError('');
+  }, [signup]);
+
+  const handleSubmit = async () => {
+    setFieldErrors({});
+    setNetworkError('');
+    const errors: Record<string, string> = {};
+
+    if (signup) {
+      if (!name.trim()) {
+        errors.name = 'Please enter your full name';
+      }
+      if (!email.trim()) {
+        errors.email = 'Please enter your email';
+      } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+        errors.email = 'Please enter a valid email address';
+      }
+      if (!password) {
+        errors.password = 'Please enter a password';
+      } else if (password.length < 8) {
+        errors.password = 'Password must be at least 8 characters';
+      }
+      if (!confirmPassword) {
+        errors.confirmPassword = 'Please repeat your password';
+      } else if (password !== confirmPassword) {
+        errors.confirmPassword = "Passwords don't match";
+      }
+
+      if (Object.keys(errors).length > 0) {
+        setFieldErrors(errors);
+        return;
+      }
+
+      setIsLoading(true);
+      try {
+        const data = await api.signup(name.trim(), email.trim(), password);
+        setUser(data.user);
+        toast.success('Account created');
+        go('/onboarding');
+      } catch (err: any) {
+        if (err instanceof ApiError && err.isNetworkError) {
+          setNetworkError('Network error: Unable to connect to server');
+        } else if (err instanceof ApiError && (err.status === 400 || err.detail?.toLowerCase().includes('already used'))) {
+          setFieldErrors({ email: 'Email already used' });
+        } else {
+          setNetworkError(err.detail || 'An error occurred during sign up');
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      if (!email.trim()) {
+        errors.email = 'Please enter your email';
+      }
+      if (!password) {
+        errors.password = 'Please enter your password';
+      }
+
+      if (Object.keys(errors).length > 0) {
+        setFieldErrors(errors);
+        return;
+      }
+
+      setIsLoading(true);
+      try {
+        const data = await api.login(email.trim(), password);
+        setUser(data.user);
+        toast.success('Welcome back');
+        if (data.user.onboarding_status && data.user.onboarding_status !== 'profile_confirmed') {
+          go('/onboarding');
+        } else {
+          go('/dashboard');
+        }
+      } catch (err: any) {
+        if (err instanceof ApiError && err.isNetworkError) {
+          setNetworkError('Network error: Unable to connect to server');
+        } else if (err instanceof ApiError && (err.status === 401 || err.detail?.toLowerCase().includes('invalid credentials'))) {
+          setFieldErrors({ password: 'Wrong credentials' });
+        } else {
+          setNetworkError(err.detail || 'An error occurred during login');
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    }
+  };
+
+  const handleGoogleAuth = async () => {
+    setFieldErrors({});
+    setNetworkError('');
+    setIsGoogleLoading(true);
+
+    try {
+      const googleEmail = email.trim() || 'alex.kumar.google@gmail.com';
+      const googleName = name.trim() || (googleEmail.toLowerCase().includes('alex') ? 'Alex Kumar' : googleEmail.split('@')[0]);
+
+      const data = await api.googleAuth({
+        email: googleEmail,
+        name: googleName,
+        token: 'google-oauth-token',
+      });
+      setUser(data.user);
+      toast.success('Signed in with Google');
+      if (data.user.onboarding_status && data.user.onboarding_status !== 'profile_confirmed') {
+        go('/onboarding');
+      } else {
+        go('/dashboard');
+      }
+    } catch (err: any) {
+      if (err instanceof ApiError && err.isNetworkError) {
+        setNetworkError('Network error: Unable to connect to server');
+      } else {
+        setNetworkError(err.detail || 'Failed to sign in with Google');
+      }
+    } finally {
+      setIsGoogleLoading(false);
+    }
+  };
+
+  return (
+    <div className="auth-page">
+      <div className="auth-visual">
+        <button className="brand" onClick={() => go('/')}>
+          <span className="brand-mark">
+            <BrainCircuit />
+          </span>
+          interv<span>ai</span>
+        </button>
+        <div>
+          <span className="eyebrow">THE BETTER INTERVIEW LOOP</span>
+          <h1>
+            Practice with<br />
+            <em>presence.</em>
+          </h1>
+        </div>
+        <p>Sharper answers. Calmer delivery. A clearer read on what comes next.</p>
+      </div>
+      <div className="auth-form">
+        <button className="mobile-brand brand" onClick={() => go('/')}>
+          <span className="brand-mark">
+            <BrainCircuit />
+          </span>
+          interv<span>ai</span>
+        </button>
+        <span className="eyebrow">{signup ? 'CREATE YOUR ACCOUNT' : 'WELCOME BACK'}</span>
+        <h2>{signup ? 'Start your practice loop.' : 'Pick up where you left off.'}</h2>
+        <p className="muted">
+          {signup ? 'Your first session is on us. No credit card required.' : 'Your progress is waiting.'}
+        </p>
+
+        {signup && (
+          <label>
+            Full name
+            <input
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setFieldErrors((p) => ({ ...p, name: '' }));
+              }}
+              placeholder="Alex Kumar"
+              className={fieldErrors.name ? 'input-error' : ''}
+            />
+            {fieldErrors.name && <span className="field-error">{fieldErrors.name}</span>}
+          </label>
+        )}
+
+        <label>
+          Email
+          <input
+            value={email}
+            onChange={(e) => {
+              setEmail(e.target.value);
+              setFieldErrors((p) => ({ ...p, email: '' }));
+            }}
+            placeholder="you@example.com"
+            type="email"
+            className={fieldErrors.email ? 'input-error' : ''}
+          />
+          {fieldErrors.email && <span className="field-error">{fieldErrors.email}</span>}
+        </label>
+
+        <label>
+          Password
+          <input
+            value={password}
+            onChange={(e) => {
+              setPassword(e.target.value);
+              setFieldErrors((p) => ({ ...p, password: '' }));
+            }}
+            placeholder="At least 8 characters"
+            type="password"
+            className={fieldErrors.password ? 'input-error' : ''}
+          />
+          {fieldErrors.password && <span className="field-error">{fieldErrors.password}</span>}
+        </label>
+
+        {signup && (
+          <label>
+            Confirm password
+            <input
+              value={confirmPassword}
+              onChange={(e) => {
+                setConfirmPassword(e.target.value);
+                setFieldErrors((p) => ({ ...p, confirmPassword: '' }));
+              }}
+              placeholder="Repeat your password"
+              type="password"
+              className={fieldErrors.confirmPassword ? 'input-error' : ''}
+            />
+            {fieldErrors.confirmPassword && <span className="field-error">{fieldErrors.confirmPassword}</span>}
+          </label>
+        )}
+
+        {networkError && <div className="network-error">{networkError}</div>}
+
+        <Pill onClick={handleSubmit} disabled={isLoading || isGoogleLoading}>
+          {isLoading ? (signup ? 'Creating account...' : 'Logging in...') : signup ? 'Create account' : 'Log in'}
+        </Pill>
+
+        <button
+          className={`google ${isGoogleLoading ? 'btn-disabled' : ''}`}
+          onClick={handleGoogleAuth}
+          disabled={isLoading || isGoogleLoading}
+        >
+          {isGoogleLoading ? 'Connecting to Google...' : 'Continue with Google'}
+        </button>
+
+        {!signup && (
+          <button className="forgot" onClick={() => toast.success('Reset link sent — check your inbox')}>
+            Forgot password?
+          </button>
+        )}
+
+        <p className="auth-switch">
+          {signup ? 'Already have an account?' : 'New to IntervAI?'}{' '}
+          <button onClick={() => go(signup ? '/login' : '/signup')}>
+            {signup ? 'Log in' : 'Create an account'}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function Onboarding({ go }: { go: (p: string) => void }) {
+  const { refreshUser } = useAuth();
+  const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  // Step 1: Education state
+  const [degree, setDegree] = useState("Bachelor's degree");
+  const [branch, setBranch] = useState('');
+  const [college, setCollege] = useState('');
+  const [graduationYear, setGraduationYear] = useState('2026');
+  const [cgpa, setCgpa] = useState('');
+  const [cgpaScale, setCgpaScale] = useState('10.0');
+
+  // Step 2: Target state
+  const [targetRole, setTargetRole] = useState('');
+  const [companyType, setCompanyType] = useState('Product');
+  const [experienceLevel, setExperienceLevel] = useState('Fresher');
+  const [jobDescription, setJobDescription] = useState('');
+  const [roleSuggestions, setRoleSuggestions] = useState<string[]>([]);
+
+  // Step 3 & 4: CV Upload & Structuring state
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [cvId, setCvId] = useState<number | null>(null);
+  const [cvStatus, setCvStatus] = useState<'idle' | 'uploading' | 'extracting' | 'extracted' | 'failed'>('idle');
+  const [uploadFileName, setUploadFileName] = useState('');
+  const [extractedLength, setExtractedLength] = useState<number | null>(null);
+  const [cvError, setCvError] = useState<{ code: string; message: string } | null>(null);
+
+  // Step 4: Structured CV & Cross-Check state
+  const [parsedCV, setParsedCV] = useState<StructuredCV | null>(null);
+  const [crossCheckFlags, setCrossCheckFlags] = useState<CrossCheckFlag[]>([]);
+  const [isParsing, setIsParsing] = useState(false);
+  const [skillsList, setSkillsList] = useState<string[]>(['React', 'TypeScript', 'System design']);
+
+  // Editable profile sections state
+  const [personalName, setPersonalName] = useState('');
+  const [personalEmail, setPersonalEmail] = useState('');
+  const [personalPhone, setPersonalPhone] = useState('');
+  const [personalLinks, setPersonalLinks] = useState<string[]>([]);
+
+  const [eduDegree, setEduDegree] = useState('');
+  const [eduBranch, setEduBranch] = useState('');
+  const [eduCollege, setEduCollege] = useState('');
+  const [eduYear, setEduYear] = useState<string | number>('');
+  const [eduCgpa, setEduCgpa] = useState<string | number>('');
+
+  const [skillsLanguages, setSkillsLanguages] = useState<string[]>([]);
+  const [skillsFrameworks, setSkillsFrameworks] = useState<string[]>([]);
+  const [skillsTools, setSkillsTools] = useState<string[]>([]);
+  const [skillsDomains, setSkillsDomains] = useState<string[]>([]);
+  const [skillsSoft, setSkillsSoft] = useState<string[]>([]);
+
+  const [projectsList, setProjectsList] = useState<
+    Array<{ title: string; description?: string | null; tech_stack: string[]; role?: string | null; outcomes?: string | null }>
+  >([]);
+  const [experienceList, setExperienceList] = useState<
+    Array<{ company: string; role: string; duration?: string | null; responsibilities: string[] }>
+  >([]);
+  const [certificationsList, setCertificationsList] = useState<string[]>([]);
+  const [achievementsList, setAchievementsList] = useState<string[]>([]);
+
+  // Track resolved flags: key -> { resolved: boolean, choice?: string }
+  const [resolvedFlags, setResolvedFlags] = useState<Record<string, { resolved: boolean; choice?: string }>>({});
+
+  // Poll CV status helper
+  const pollCVExtraction = (cvId: number) => {
+    let attempts = 0;
+    const interval = setInterval(async () => {
+      attempts++;
+      try {
+        const res = await api.getCVStatus(cvId);
+        if (res.status === 'extracted') {
+          clearInterval(interval);
+          setCvStatus('extracted');
+          setExtractedLength(res.text_length || null);
+          toast.success('CV uploaded and text extracted!');
+          await refreshUser();
+        } else if (res.status === 'failed') {
+          clearInterval(interval);
+          setCvStatus('failed');
+          setCvError({
+            code: res.error_code || 'UNREADABLE',
+            message: res.error_message || 'Text extraction failed. Please re-upload.',
+          });
+        } else if (attempts > 30) {
+          clearInterval(interval);
+          setCvStatus('failed');
+          setCvError({
+            code: 'TIMEOUT',
+            message: 'Extraction timed out. Please try re-uploading.',
+          });
+        }
+      } catch {
+        clearInterval(interval);
+        setCvStatus('failed');
+        setCvError({
+          code: 'NETWORK_ERROR',
+          message: 'Unable to check extraction status. Please check your network.',
+        });
+      }
+    }, 1200);
+  };
+
+  const handleUploadFile = async (file: File) => {
+    setCvError(null);
+
+    // Client-side quick checks
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (ext !== 'pdf' && ext !== 'docx') {
+      setCvStatus('failed');
+      setCvError({
+        code: 'UNSUPPORTED_TYPE',
+        message: 'Unsupported file format. Please upload a PDF or DOCX file.',
+      });
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setCvStatus('failed');
+      setCvError({
+        code: 'TOO_LARGE',
+        message: `File exceeds 5 MB limit (${(file.size / (1024 * 1024)).toFixed(2)} MB). Please upload a smaller file.`,
+      });
+      return;
+    }
+
+    if (file.size === 0) {
+      setCvStatus('failed');
+      setCvError({
+        code: 'UNREADABLE',
+        message: 'The uploaded file is empty.',
+      });
+      return;
+    }
+
+    setUploadFileName(file.name);
+    setCvStatus('uploading');
+
+    try {
+      const res = await api.uploadCV(file);
+      setCvId(res.id);
+      setParsedCV(null);
+      setCrossCheckFlags([]);
+      setCvStatus('extracting');
+      pollCVExtraction(res.id);
+    } catch (err: any) {
+      setCvStatus('failed');
+      const code = err.errorCode || (err.detail?.toLowerCase().includes('encrypted') ? 'ENCRYPTED' : err.detail?.toLowerCase().includes('size') ? 'TOO_LARGE' : 'UNREADABLE');
+      setCvError({
+        code: code,
+        message: err.detail || 'Upload failed. Please check the file and re-upload.',
+      });
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleUploadFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  // Load saved data and resume onboarding position
+  useEffect(() => {
+    async function initOnboarding() {
+      setLoading(true);
+      try {
+        // Fetch target suggestions
+        api.getTargetSuggestions().then((res) => {
+          if (res?.suggestions) setRoleSuggestions(res.suggestions);
+        }).catch(() => {});
+
+        // Fetch saved education profile
+        try {
+          const edu = await api.getEducationProfile();
+          if (edu) {
+            setDegree(edu.degree || "Bachelor's degree");
+            setBranch(edu.branch || '');
+            setCollege(edu.college || '');
+            setGraduationYear(String(edu.graduation_year || 2026));
+            if (edu.cgpa != null) setCgpa(String(edu.cgpa));
+            if (edu.cgpa_scale != null) setCgpaScale(String(edu.cgpa_scale));
+          }
+        } catch {
+          const draftEdu = localStorage.getItem('intervai_edu_draft');
+          if (draftEdu) {
+            try {
+              const d = JSON.parse(draftEdu);
+              if (d.degree) setDegree(d.degree);
+              if (d.branch) setBranch(d.branch);
+              if (d.college) setCollege(d.college);
+              if (d.graduationYear) setGraduationYear(d.graduationYear);
+              if (d.cgpa) setCgpa(d.cgpa);
+              if (d.cgpaScale) setCgpaScale(d.cgpaScale);
+            } catch {}
+          }
+        }
+
+        // Fetch saved target profile
+        try {
+          const tgt = await api.getTargetProfile();
+          if (tgt) {
+            setTargetRole(tgt.target_role || '');
+            setCompanyType(tgt.company_type || 'Product');
+            setExperienceLevel(tgt.experience_level || 'Fresher');
+            setJobDescription(tgt.job_description || '');
+          }
+        } catch {
+          const draftTgt = localStorage.getItem('intervai_tgt_draft');
+          if (draftTgt) {
+            try {
+              const d = JSON.parse(draftTgt);
+              if (d.targetRole) setTargetRole(d.targetRole);
+              if (d.companyType) setCompanyType(d.companyType);
+              if (d.experienceLevel) setExperienceLevel(d.experienceLevel);
+              if (d.jobDescription) setJobDescription(d.jobDescription);
+            } catch {}
+          }
+        }
+
+        // Fetch latest CV if available
+        try {
+          const latestCV = await api.getLatestCV();
+          if (latestCV) {
+            setCvId(latestCV.id);
+            if (latestCV.status === 'extracted') {
+              setCvStatus('extracted');
+              setUploadFileName(latestCV.filename);
+              setExtractedLength(latestCV.text_length || null);
+
+              // Check if already structured
+              try {
+                const parsedRes = await api.getParsedCV(latestCV.id);
+                if (parsedRes && parsedRes.structured_data) {
+                  setParsedCV(parsedRes.structured_data);
+                  setCrossCheckFlags(parsedRes.cross_check_flags || []);
+                  const skills = [
+                    ...parsedRes.structured_data.skills.languages,
+                    ...parsedRes.structured_data.skills.frameworks,
+                    ...parsedRes.structured_data.skills.tools,
+                  ];
+                  if (skills.length > 0) {
+                    setSkillsList(skills);
+                  }
+                }
+              } catch {}
+            }
+          }
+        } catch {}
+
+        // Determine current resume step
+        try {
+          const statusRes = await api.getOnboardingStatus();
+          if (statusRes.current_step && statusRes.current_step >= 1 && statusRes.current_step <= 4) {
+            setStep(statusRes.current_step);
+          } else if (statusRes.current_step === 5) {
+            go('/dashboard');
+          }
+        } catch {}
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    initOnboarding();
+  }, []);
+
+  // Auto-save drafts to localStorage
+  useEffect(() => {
+    if (!loading) {
+      localStorage.setItem(
+        'intervai_edu_draft',
+        JSON.stringify({ degree, branch, college, graduationYear, cgpa, cgpaScale })
+      );
+    }
+  }, [degree, branch, college, graduationYear, cgpa, cgpaScale, loading]);
+
+  useEffect(() => {
+    if (!loading) {
+      localStorage.setItem(
+        'intervai_tgt_draft',
+        JSON.stringify({ targetRole, companyType, experienceLevel, jobDescription })
+      );
+    }
+  }, [targetRole, companyType, experienceLevel, jobDescription, loading]);
+
+  // Step 1: Submit Education
+  const handleContinueEducation = async () => {
+    const errors: Record<string, string> = {};
+    if (!branch.trim()) {
+      errors.branch = 'Please enter your branch/major';
+    }
+    if (!college.trim()) {
+      errors.college = 'Please enter your college or university';
+    }
+
+    const scaleNum = parseFloat(cgpaScale) || 10.0;
+    if (cgpa.trim()) {
+      const cgpaNum = parseFloat(cgpa);
+      if (isNaN(cgpaNum) || cgpaNum < 0 || cgpaNum > scaleNum) {
+        errors.cgpa = `CGPA must be a valid number between 0 and ${scaleNum}`;
+      }
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      return;
+    }
+
+    setFieldErrors({});
+    setSaving(true);
+    try {
+      await api.saveEducationProfile({
+        degree,
+        branch: branch.trim(),
+        college: college.trim(),
+        graduation_year: parseInt(graduationYear, 10) || 2026,
+        cgpa: cgpa.trim() ? parseFloat(cgpa) : null,
+        cgpa_scale: scaleNum,
+      });
+      toast.success('Education profile saved');
+      await refreshUser();
+      setStep(2);
+    } catch (err: any) {
+      toast.error(err.detail || 'Failed to save education profile');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Step 2: Submit Target Profile
+  const handleContinueTarget = async () => {
+    const errors: Record<string, string> = {};
+    if (!targetRole.trim()) {
+      errors.targetRole = 'Please specify or select a target role';
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      return;
+    }
+
+    setFieldErrors({});
+    setSaving(true);
+    try {
+      await api.saveTargetProfile({
+        target_role: targetRole.trim(),
+        company_type: companyType,
+        experience_level: experienceLevel,
+        job_description: jobDescription.trim() || undefined,
+      });
+      toast.success('Target preferences saved');
+      await refreshUser();
+      setStep(3);
+    } catch (err: any) {
+      toast.error(err.detail || 'Failed to save target preferences');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const syncParsedCVToState = (cv: StructuredCV) => {
+    setPersonalName(cv.personal?.name || '');
+    setPersonalEmail(cv.personal?.email || '');
+    setPersonalPhone(cv.personal?.phone || '');
+    setPersonalLinks(cv.personal?.links || []);
+
+    if (cv.education && cv.education[0]) {
+      setEduDegree(cv.education[0].degree || degree);
+      setEduBranch(cv.education[0].branch || branch);
+      setEduCollege(cv.education[0].college || college);
+      setEduYear(cv.education[0].year != null ? String(cv.education[0].year) : graduationYear);
+      setEduCgpa(cv.education[0].cgpa != null ? String(cv.education[0].cgpa) : cgpa);
+    } else {
+      setEduDegree(degree);
+      setEduBranch(branch);
+      setEduCollege(college);
+      setEduYear(graduationYear);
+      setEduCgpa(cgpa);
+    }
+
+    setSkillsLanguages(cv.skills?.languages || []);
+    setSkillsFrameworks(cv.skills?.frameworks || []);
+    setSkillsTools(cv.skills?.tools || []);
+    setSkillsDomains(cv.skills?.domains || []);
+    setSkillsSoft(cv.skills?.soft || []);
+
+    setProjectsList(cv.projects || []);
+    setExperienceList(cv.internships_experience || []);
+    setCertificationsList(cv.certifications || []);
+    setAchievementsList(cv.achievements || []);
+  };
+
+  // Step 3: Parse CV & Cross-Check to advance to Step 4
+  const handleProceedToStep4 = async () => {
+    if (cvStatus !== 'extracted') {
+      toast.error('Please upload and extract a valid CV before continuing');
+      return;
+    }
+
+    if (!parsedCV && cvId) {
+      setIsParsing(true);
+      try {
+        const parsedRes = await api.parseCV(cvId);
+        setParsedCV(parsedRes.structured_data);
+        setCrossCheckFlags(parsedRes.cross_check_flags || []);
+        syncParsedCVToState(parsedRes.structured_data);
+        if (parsedRes.cross_check_flags && parsedRes.cross_check_flags.length > 0) {
+          toast.warning(`Structured CV with ${parsedRes.cross_check_flags.length} alignment note(s)`);
+        } else {
+          toast.success('CV structured successfully!');
+        }
+      } catch (err: any) {
+        toast.error(err.detail || 'Structuring in progress. Proceeding to profile review.');
+      } finally {
+        setIsParsing(false);
+      }
+    } else if (parsedCV) {
+      syncParsedCVToState(parsedCV);
+    }
+    setStep(4);
+  };
+
+  const resolveFlag = (idx: number, choice: 'cv' | 'form' | 'acknowledge') => {
+    const flag = crossCheckFlags[idx];
+    if (!flag) return;
+    const key = `${flag.type}_${flag.field}_${idx}`;
+
+    if (choice === 'form') {
+      if (flag.field === 'degree') setEduDegree(flag.form_value || degree);
+      else if (flag.field === 'branch') setEduBranch(flag.form_value || branch);
+      else if (flag.field === 'college') setEduCollege(flag.form_value || college);
+      else if (flag.field === 'graduation_year') setEduYear(flag.form_value || graduationYear);
+      else if (flag.field === 'cgpa') setEduCgpa(flag.form_value || cgpa);
+      else if (flag.field === 'target_role_skills') {
+        const roleSkill = flag.form_value || targetRole;
+        if (roleSkill && !skillsDomains.includes(roleSkill)) {
+          setSkillsDomains((p) => [...p, roleSkill]);
+        }
+      }
+    }
+
+    setResolvedFlags((prev) => ({
+      ...prev,
+      [key]: {
+        resolved: true,
+        choice: choice === 'form' ? 'Used form value' : choice === 'cv' ? 'Kept CV value' : 'Acknowledged',
+      },
+    }));
+    toast.success(`Resolved note for ${flag.field}`);
+  };
+
+  const unresolvedHighCount = crossCheckFlags.filter((f, idx) => {
+    const key = `${f.type}_${f.field}_${idx}`;
+    return f.severity === 'HIGH' && !resolvedFlags[key]?.resolved;
+  }).length;
+
+  const handleConfirmProfile = async () => {
+    if (unresolvedHighCount > 0) {
+      toast.error(`Please resolve ${unresolvedHighCount} high-severity note(s) before confirming.`);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const canonicalData: StructuredCV = {
+        personal: {
+          name: personalName.trim() || undefined,
+          email: personalEmail.trim() || undefined,
+          phone: personalPhone.trim() || undefined,
+          links: personalLinks,
+        },
+        education: [
+          {
+            degree: eduDegree || degree,
+            branch: eduBranch || branch,
+            college: eduCollege || college,
+            year: eduYear || graduationYear,
+            cgpa: eduCgpa ? (typeof eduCgpa === 'string' ? parseFloat(eduCgpa) : eduCgpa) : undefined,
+          },
+        ],
+        skills: {
+          languages: skillsLanguages,
+          frameworks: skillsFrameworks,
+          tools: skillsTools,
+          domains: skillsDomains,
+          soft: skillsSoft,
+        },
+        projects: projectsList,
+        internships_experience: experienceList,
+        certifications: certificationsList,
+        achievements: achievementsList,
+      };
+
+      const unresolved = crossCheckFlags.filter((f, idx) => {
+        const key = `${f.type}_${f.field}_${idx}`;
+        return !resolvedFlags[key]?.resolved;
+      });
+
+      await api.confirmProfile({
+        structured_data: canonicalData,
+        unresolved_flags: unresolved,
+        cv_document_id: cvId,
+      });
+
+      toast.success('Practice profile confirmed and saved!');
+      await refreshUser();
+      go('/dashboard');
+    } catch (err: any) {
+      toast.error(err.detail || 'Failed to confirm profile');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Shell go={go}>
+        <main className="onboarding">
+          <div style={{ padding: '80px 0', textAlign: 'center', color: '#9aa3b2', fontFamily: 'DM Sans, sans-serif' }}>
+            Resuming your onboarding...
+          </div>
+        </main>
+      </Shell>
+    );
+  }
+
+  return (
+    <Shell go={go}>
+      <main className="onboarding">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div className="eyebrow">PROFILE SETUP · 0{step} / 04</div>
+          <div style={{ fontSize: '11px', fontFamily: 'DM Mono, monospace', color: saving ? '#60a5fa' : '#6f7b8e' }}>
+            {saving ? 'Saving...' : 'Auto-saved'}
+          </div>
+        </div>
+        <div className="progress">
+          <i style={{ width: `${step * 25}%` }} />
+        </div>
+        <h1>
+          Let&apos;s make this<br />
+          <em>specific to you.</em>
+        </h1>
+        <p className="lead">A few details help us build better questions and sharper feedback.</p>
+
+        <div className="form-card">
+          {step === 1 && (
+            <>
+              <h2>Tell us about your education</h2>
+              <div className="form-grid">
+                <label>
+                  Degree
+                  <select value={degree} onChange={(e) => setDegree(e.target.value)}>
+                    <option>Bachelor&apos;s degree</option>
+                    <option>Master&apos;s degree</option>
+                    <option>Ph.D.</option>
+                    <option>Diploma</option>
+                  </select>
+                </label>
+                <label>
+                  Branch
+                  <input
+                    value={branch}
+                    onChange={(e) => {
+                      setBranch(e.target.value);
+                      setFieldErrors((p) => ({ ...p, branch: '' }));
+                    }}
+                    placeholder="Computer Science"
+                    className={fieldErrors.branch ? 'input-error' : ''}
+                  />
+                  {fieldErrors.branch && <span className="field-error">{fieldErrors.branch}</span>}
+                </label>
+                <label>
+                  College
+                  <input
+                    value={college}
+                    onChange={(e) => {
+                      setCollege(e.target.value);
+                      setFieldErrors((p) => ({ ...p, college: '' }));
+                    }}
+                    placeholder="Your college"
+                    className={fieldErrors.college ? 'input-error' : ''}
+                  />
+                  {fieldErrors.college && <span className="field-error">{fieldErrors.college}</span>}
+                </label>
+                <label>
+                  Graduation year
+                  <select value={graduationYear} onChange={(e) => setGraduationYear(e.target.value)}>
+                    {[2023, 2024, 2025, 2026, 2027, 2028, 2029].map((y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  CGPA / GPA (optional)
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={cgpa}
+                    onChange={(e) => {
+                      setCgpa(e.target.value);
+                      setFieldErrors((p) => ({ ...p, cgpa: '' }));
+                    }}
+                    placeholder={cgpaScale === '10.0' ? 'e.g. 8.5' : 'e.g. 3.7'}
+                    className={fieldErrors.cgpa ? 'input-error' : ''}
+                  />
+                  {fieldErrors.cgpa && <span className="field-error">{fieldErrors.cgpa}</span>}
+                </label>
+                <label>
+                  CGPA Scale
+                  <select value={cgpaScale} onChange={(e) => setCgpaScale(e.target.value)}>
+                    <option value="10.0">10.0 Scale</option>
+                    <option value="4.0">4.0 Scale</option>
+                  </select>
+                </label>
+              </div>
+            </>
+          )}
+
+          {step === 2 && (
+            <>
+              <h2>What are you aiming for?</h2>
+              <div className="form-grid">
+                <label>
+                  Target role
+                  <input
+                    value={targetRole}
+                    onChange={(e) => {
+                      setTargetRole(e.target.value);
+                      setFieldErrors((p) => ({ ...p, targetRole: '' }));
+                    }}
+                    placeholder="e.g. Frontend Engineer"
+                    className={fieldErrors.targetRole ? 'input-error' : ''}
+                  />
+                  {fieldErrors.targetRole && <span className="field-error">{fieldErrors.targetRole}</span>}
+                </label>
+                <label>
+                  Company type
+                  <select value={companyType} onChange={(e) => setCompanyType(e.target.value)}>
+                    <option value="Product">Product</option>
+                    <option value="Startup">Startup</option>
+                    <option value="Service">Service</option>
+                    <option value="MNC">MNC</option>
+                    <option value="Core/Other">Core/Other</option>
+                  </select>
+                </label>
+                <label>
+                  Experience level
+                  <select value={experienceLevel} onChange={(e) => setExperienceLevel(e.target.value)}>
+                    <option value="Fresher">Fresher</option>
+                    <option value="0-2">0–2 years</option>
+                    <option value="2-5">2–5 years</option>
+                    <option value="5+">5+ years</option>
+                  </select>
+                </label>
+              </div>
+
+              {/* Target role suggestions list */}
+              <div style={{ marginTop: '12px', marginBottom: '22px' }}>
+                <span
+                  style={{
+                    fontSize: '11px',
+                    color: '#6f7b8e',
+                    fontFamily: 'DM Mono, monospace',
+                    letterSpacing: '1px',
+                    display: 'block',
+                    marginBottom: '8px',
+                  }}
+                >
+                  SUGGESTIONS:
+                </span>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {(roleSuggestions.length > 0
+                    ? roleSuggestions.slice(0, 6)
+                    : ['Frontend Engineer', 'Backend Engineer', 'Fullstack Engineer', 'Data Scientist', 'DevOps Engineer']
+                  ).map((role) => (
+                    <button
+                      key={role}
+                      type="button"
+                      onClick={() => {
+                        setTargetRole(role);
+                        setFieldErrors((p) => ({ ...p, targetRole: '' }));
+                      }}
+                      style={{
+                        background: targetRole === role ? '#1b3357' : '#12151b',
+                        border: targetRole === role ? '1px solid #3b82f6' : '1px solid #ffffff16',
+                        borderRadius: '999px',
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        color: targetRole === role ? '#9ecaff' : '#8893a3',
+                        cursor: 'pointer',
+                        transition: '.2s',
+                      }}
+                    >
+                      + {role}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label>
+                Job description{' '}
+                <textarea
+                  value={jobDescription}
+                  onChange={(e) => setJobDescription(e.target.value)}
+                  placeholder="Paste a job description for more tailored practice (optional)"
+                />
+              </label>
+            </>
+          )}
+
+          {step === 3 && (
+            <>
+              <h2>Bring your CV into the room</h2>
+              <input
+                type="file"
+                ref={fileInputRef}
+                accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) {
+                    handleUploadFile(e.target.files[0]);
+                  }
+                }}
+              />
+              <div
+                className={`upload ${isDragging ? 'drag-over' : ''}`}
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                style={{ cursor: 'pointer' }}
+              >
+                {cvStatus === 'extracted' ? (
+                  <ShieldCheck style={{ color: '#34d399', width: '28px', height: '28px' }} />
+                ) : cvStatus === 'failed' ? (
+                  <LockKeyhole style={{ color: '#f87171' }} />
+                ) : (
+                  <LockKeyhole />
+                )}
+                <strong>
+                  {cvStatus === 'uploading'
+                    ? 'Uploading your CV...'
+                    : cvStatus === 'extracting'
+                    ? 'Analyzing & extracting text...'
+                    : cvStatus === 'extracted'
+                    ? uploadFileName || 'CV Uploaded'
+                    : cvStatus === 'failed'
+                    ? 'Upload failed — try again'
+                    : 'Drop your CV here, or browse'}
+                </strong>
+                <span>
+                  {cvStatus === 'extracted'
+                    ? `✓ Extracted text (${extractedLength || 'done'} characters) · Click to replace`
+                    : cvStatus === 'uploading' || cvStatus === 'extracting'
+                    ? 'Extracting sections, experience & skills'
+                    : 'PDF or DOCX · Max 5 MB'}
+                </span>
+              </div>
+
+              {cvError && (
+                <div
+                  className="network-error"
+                  style={{
+                    marginTop: '15px',
+                    textAlign: 'left',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '12px',
+                  }}
+                >
+                  <div>
+                    <strong style={{ color: '#f87171' }}>[{cvError.code}]</strong> {cvError.message}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      fileInputRef.current?.click();
+                    }}
+                    style={{
+                      color: '#60a5fa',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                      background: 'none',
+                      border: 'none',
+                      padding: '4px 8px',
+                      fontSize: '12px',
+                      flexShrink: 0,
+                    }}
+                  >
+                    Re-upload
+                  </button>
+                </div>
+              )}
+
+              <div className="parse-list">
+                <span className={cvStatus === 'extracted' ? '' : cvStatus === 'extracting' || cvStatus === 'uploading' ? 'active' : 'dim'}>
+                  {cvStatus === 'extracted' ? '✓' : cvStatus === 'extracting' || cvStatus === 'uploading' ? '⏳' : '○'} Extracting your experience
+                </span>
+                <span className={cvStatus === 'extracted' ? '' : cvStatus === 'extracting' ? 'active' : 'dim'}>
+                  {cvStatus === 'extracted' ? '✓' : cvStatus === 'extracting' ? '⏳' : '○'} Finding your strongest signals
+                </span>
+                <span className={parsedCV ? '' : isParsing ? 'active' : 'dim'}>
+                  {parsedCV ? '✓' : isParsing ? '⏳' : '○'} Structuring your practice profile
+                </span>
+              </div>
+            </>
+          )}
+
+          {step === 4 && (
+            <>
+              <h2>Review and edit your practice profile</h2>
+              <p className="lead" style={{ marginBottom: '25px' }}>
+                We synthesized your CV, education form, and target preferences. Fine-tune any section below before starting interviews.
+              </p>
+
+              {/* Cross-Check Alignment Flags */}
+              {crossCheckFlags.length > 0 && (
+                <div style={{ marginBottom: '28px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                    <span style={{ fontSize: '11px', fontFamily: 'DM Mono, monospace', color: '#f59e0b', letterSpacing: '1px' }}>
+                      ALIGNMENT CHECK · {crossCheckFlags.length} NOTE{crossCheckFlags.length > 1 ? 'S' : ''} DETECTED
+                    </span>
+                    {unresolvedHighCount > 0 && (
+                      <span style={{ fontSize: '11px', fontFamily: 'DM Mono, monospace', color: '#f87171' }}>
+                        {unresolvedHighCount} high-severity note(s) required to resolve
+                      </span>
+                    )}
+                  </div>
+                  {crossCheckFlags.map((flag, idx) => {
+                    const key = `${flag.type}_${flag.field}_${idx}`;
+                    const resInfo = resolvedFlags[key];
+                    return (
+                      <div key={key} className={`flag-banner ${flag.severity === 'HIGH' ? 'high' : ''}`}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '10px' }}>
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                            <AlertTriangle
+                              style={{
+                                width: '16px',
+                                height: '16px',
+                                color: flag.severity === 'HIGH' ? '#ef4444' : '#f59e0b',
+                                flexShrink: 0,
+                                marginTop: '2px',
+                              }}
+                            />
+                            <div>
+                              <strong style={{ color: flag.severity === 'HIGH' ? '#f87171' : '#fbbf24' }}>
+                                [{flag.severity}] {flag.type}: {flag.field}
+                              </strong>
+                              <p style={{ margin: '4px 0 0', color: '#d1d5db', fontSize: '12px', lineHeight: '1.4' }}>
+                                {flag.message}
+                              </p>
+                              {flag.cv_value && flag.form_value && (
+                                <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px', fontFamily: 'DM Mono, monospace' }}>
+                                  CV says: <b style={{ color: '#e2e8f0' }}>{flag.cv_value}</b> · Form says:{' '}
+                                  <b style={{ color: '#60a5fa' }}>{flag.form_value}</b>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          {resInfo?.resolved && (
+                            <span style={{ color: '#34d399', fontSize: '11px', fontFamily: 'DM Mono, monospace', whiteSpace: 'nowrap' }}>
+                              ✓ {resInfo.choice}
+                            </span>
+                          )}
+                        </div>
+
+                        {!resInfo?.resolved && (
+                          <div className="flag-actions">
+                            {flag.cv_value && flag.form_value ? (
+                              <>
+                                <button type="button" className="flag-btn cv" onClick={() => resolveFlag(idx, 'cv')}>
+                                  Keep CV value ({flag.cv_value})
+                                </button>
+                                <button type="button" className="flag-btn" onClick={() => resolveFlag(idx, 'form')}>
+                                  Use form value ({flag.form_value})
+                                </button>
+                              </>
+                            ) : (
+                              <button type="button" className="flag-btn" onClick={() => resolveFlag(idx, 'acknowledge')}>
+                                Acknowledge & Keep
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Section 1: Personal Info Card */}
+              <div className="card-section">
+                <h3>Personal Information</h3>
+                <div className="form-grid">
+                  <label>
+                    Full Name
+                    <input
+                      value={personalName}
+                      onChange={(e) => setPersonalName(e.target.value)}
+                      placeholder="Your full name"
+                    />
+                  </label>
+                  <label>
+                    Email
+                    <input
+                      value={personalEmail}
+                      onChange={(e) => setPersonalEmail(e.target.value)}
+                      placeholder="Email address"
+                    />
+                  </label>
+                  <label>
+                    Phone
+                    <input
+                      value={personalPhone}
+                      onChange={(e) => setPersonalPhone(e.target.value)}
+                      placeholder="+1 (555) 000-0000"
+                    />
+                  </label>
+                  <label>
+                    Portfolio / Links
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input
+                        placeholder="Add GitHub, LinkedIn or Portfolio URL"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            const val = (e.target as HTMLInputElement).value.trim();
+                            if (val) {
+                              setPersonalLinks((p) => [...p, val]);
+                              (e.target as HTMLInputElement).value = '';
+                            }
+                          }
+                        }}
+                      />
+                    </div>
+                  </label>
+                </div>
+                {personalLinks.length > 0 && (
+                  <div className="chips" style={{ marginTop: '10px', marginBottom: 0 }}>
+                    {personalLinks.map((l, i) => (
+                      <span key={i}>
+                        {l}{' '}
+                        <button type="button" onClick={() => setPersonalLinks((p) => p.filter((_, idx) => idx !== i))}>
+                          <X style={{ width: '12px' }} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Section 2: Education Card */}
+              <div className="card-section">
+                <h3>Education Profile</h3>
+                <div className="form-grid">
+                  <label>
+                    Degree
+                    <select value={eduDegree} onChange={(e) => setEduDegree(e.target.value)}>
+                      <option>Bachelor&apos;s degree</option>
+                      <option>Master&apos;s degree</option>
+                      <option>Ph.D.</option>
+                      <option>Diploma</option>
+                    </select>
+                  </label>
+                  <label>
+                    Branch / Major
+                    <input
+                      value={eduBranch}
+                      onChange={(e) => setEduBranch(e.target.value)}
+                      placeholder="Computer Science"
+                    />
+                  </label>
+                  <label>
+                    College / University
+                    <input
+                      value={eduCollege}
+                      onChange={(e) => setEduCollege(e.target.value)}
+                      placeholder="University name"
+                    />
+                  </label>
+                  <label>
+                    Graduation Year
+                    <select value={eduYear} onChange={(e) => setEduYear(e.target.value)}>
+                      {[2023, 2024, 2025, 2026, 2027, 2028, 2029].map((y) => (
+                        <option key={y} value={y}>
+                          {y}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    CGPA / GPA
+                    <input
+                      value={eduCgpa}
+                      onChange={(e) => setEduCgpa(e.target.value)}
+                      placeholder="e.g. 3.8 or 8.5"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* Section 3: Target Role Card */}
+              <div className="card-section">
+                <h3>Target Practice Goals</h3>
+                <div className="form-grid">
+                  <label>
+                    Target Role
+                    <input
+                      value={targetRole}
+                      onChange={(e) => setTargetRole(e.target.value)}
+                      placeholder="Frontend Engineer"
+                    />
+                  </label>
+                  <label>
+                    Company Type
+                    <select value={companyType} onChange={(e) => setCompanyType(e.target.value)}>
+                      <option value="Product">Product</option>
+                      <option value="Startup">Startup</option>
+                      <option value="Service">Service</option>
+                      <option value="MNC">MNC</option>
+                      <option value="Core/Other">Core/Other</option>
+                    </select>
+                  </label>
+                  <label>
+                    Experience Level
+                    <select value={experienceLevel} onChange={(e) => setExperienceLevel(e.target.value)}>
+                      <option value="Fresher">Fresher</option>
+                      <option value="0-2">0–2 years</option>
+                      <option value="2-5">2–5 years</option>
+                      <option value="5+">5+ years</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              {/* Section 4: Skills Card (Grouped) */}
+              <div className="card-section">
+                <h3>Skills & Capabilities</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {/* Languages */}
+                  <div>
+                    <span style={{ fontSize: '11px', color: '#6f7b8e', fontFamily: 'DM Mono', letterSpacing: '1px' }}>
+                      LANGUAGES:
+                    </span>
+                    <div className="chips" style={{ marginTop: '8px', marginBottom: 0 }}>
+                      {skillsLanguages.map((s, i) => (
+                        <span key={i}>
+                          {s}{' '}
+                          <button type="button" onClick={() => setSkillsLanguages((p) => p.filter((_, idx) => idx !== i))}>
+                            <X style={{ width: '12px' }} />
+                          </button>
+                        </span>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = prompt('Add language (e.g. TypeScript, Python):');
+                          if (val && val.trim()) setSkillsLanguages((p) => [...p, val.trim()]);
+                        }}
+                      >
+                        + Add language
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Frameworks */}
+                  <div>
+                    <span style={{ fontSize: '11px', color: '#6f7b8e', fontFamily: 'DM Mono', letterSpacing: '1px' }}>
+                      FRAMEWORKS & LIBRARIES:
+                    </span>
+                    <div className="chips" style={{ marginTop: '8px', marginBottom: 0 }}>
+                      {skillsFrameworks.map((s, i) => (
+                        <span key={i}>
+                          {s}{' '}
+                          <button type="button" onClick={() => setSkillsFrameworks((p) => p.filter((_, idx) => idx !== i))}>
+                            <X style={{ width: '12px' }} />
+                          </button>
+                        </span>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = prompt('Add framework (e.g. React, FastAPI):');
+                          if (val && val.trim()) setSkillsFrameworks((p) => [...p, val.trim()]);
+                        }}
+                      >
+                        + Add framework
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Tools */}
+                  <div>
+                    <span style={{ fontSize: '11px', color: '#6f7b8e', fontFamily: 'DM Mono', letterSpacing: '1px' }}>
+                      TOOLS & INFRASTRUCTURE:
+                    </span>
+                    <div className="chips" style={{ marginTop: '8px', marginBottom: 0 }}>
+                      {skillsTools.map((s, i) => (
+                        <span key={i}>
+                          {s}{' '}
+                          <button type="button" onClick={() => setSkillsTools((p) => p.filter((_, idx) => idx !== i))}>
+                            <X style={{ width: '12px' }} />
+                          </button>
+                        </span>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = prompt('Add tool (e.g. Docker, Git, PostgreSQL):');
+                          if (val && val.trim()) setSkillsTools((p) => [...p, val.trim()]);
+                        }}
+                      >
+                        + Add tool
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Domains */}
+                  <div>
+                    <span style={{ fontSize: '11px', color: '#6f7b8e', fontFamily: 'DM Mono', letterSpacing: '1px' }}>
+                      DOMAINS & COMPETENCIES:
+                    </span>
+                    <div className="chips" style={{ marginTop: '8px', marginBottom: 0 }}>
+                      {skillsDomains.map((s, i) => (
+                        <span key={i}>
+                          {s}{' '}
+                          <button type="button" onClick={() => setSkillsDomains((p) => p.filter((_, idx) => idx !== i))}>
+                            <X style={{ width: '12px' }} />
+                          </button>
+                        </span>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = prompt('Add domain (e.g. Distributed Systems, Frontend):');
+                          if (val && val.trim()) setSkillsDomains((p) => [...p, val.trim()]);
+                        }}
+                      >
+                        + Add domain
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 5: Projects Card */}
+              <div className="card-section">
+                <h3>
+                  <span>Projects ({projectsList.length})</span>
+                  <button
+                    type="button"
+                    className="flag-btn"
+                    onClick={() => {
+                      const title = prompt('Project title:');
+                      if (title && title.trim()) {
+                        const desc = prompt('Short description:') || '';
+                        const tech = prompt('Tech stack (comma-separated):') || '';
+                        setProjectsList((p) => [
+                          ...p,
+                          {
+                            title: title.trim(),
+                            description: desc.trim(),
+                            tech_stack: tech.split(',').map((t) => t.trim()).filter(Boolean),
+                          },
+                        ]);
+                        // If there was a missing projects flag, resolve it
+                        crossCheckFlags.forEach((f, idx) => {
+                          if (f.field === 'projects') resolveFlag(idx, 'acknowledge');
+                        });
+                      }
+                    }}
+                  >
+                    + Add Project
+                  </button>
+                </h3>
+                {projectsList.length === 0 ? (
+                  <p style={{ color: '#6f7b8e', fontSize: '13px' }}>No projects added yet.</p>
+                ) : (
+                  projectsList.map((proj, idx) => (
+                    <div key={idx} className="item-box">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <div>
+                          <strong style={{ color: '#f2f4f8', fontSize: '14px' }}>{proj.title}</strong>
+                          {proj.role && (
+                            <span style={{ fontSize: '12px', color: '#60a5fa', marginLeft: '10px' }}>
+                              ({proj.role})
+                            </span>
+                          )}
+                          {proj.description && (
+                            <p style={{ margin: '6px 0', color: '#9ca3af', fontSize: '12px', lineHeight: '1.4' }}>
+                              {proj.description}
+                            </p>
+                          )}
+                          {proj.tech_stack && proj.tech_stack.length > 0 && (
+                            <div className="chips" style={{ marginTop: '8px', marginBottom: 0 }}>
+                              {proj.tech_stack.map((t, ti) => (
+                                <span key={ti} style={{ padding: '4px 8px', fontSize: '11px' }}>
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setProjectsList((p) => p.filter((_, i) => i !== idx))}
+                          style={{ color: '#f87171', padding: '4px', cursor: 'pointer' }}
+                        >
+                          <Trash2 style={{ width: '15px' }} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Section 6: Experience Card */}
+              <div className="card-section">
+                <h3>
+                  <span>Internships & Experience ({experienceList.length})</span>
+                  <button
+                    type="button"
+                    className="flag-btn"
+                    onClick={() => {
+                      const comp = prompt('Company name:');
+                      if (comp && comp.trim()) {
+                        const role = prompt('Role title:') || 'Intern';
+                        const dur = prompt('Duration (e.g. Jun 2024 - Aug 2024):') || '';
+                        setExperienceList((p) => [
+                          ...p,
+                          {
+                            company: comp.trim(),
+                            role: role.trim(),
+                            duration: dur.trim(),
+                            responsibilities: [],
+                          },
+                        ]);
+                      }
+                    }}
+                  >
+                    + Add Experience
+                  </button>
+                </h3>
+                {experienceList.length === 0 ? (
+                  <p style={{ color: '#6f7b8e', fontSize: '13px' }}>No work or internship experience added.</p>
+                ) : (
+                  experienceList.map((exp, idx) => (
+                    <div key={idx} className="item-box">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <div>
+                          <strong style={{ color: '#f2f4f8', fontSize: '14px' }}>{exp.role}</strong>
+                          <span style={{ fontSize: '12px', color: '#60a5fa', marginLeft: '10px' }}>
+                            @ {exp.company}
+                          </span>
+                          {exp.duration && (
+                            <span style={{ fontSize: '11px', color: '#6f7b8e', marginLeft: '10px', fontFamily: 'DM Mono' }}>
+                              ({exp.duration})
+                            </span>
+                          )}
+                          {exp.responsibilities && exp.responsibilities.length > 0 && (
+                            <ul style={{ margin: '6px 0 0 16px', color: '#9ca3af', fontSize: '12px', padding: 0 }}>
+                              {exp.responsibilities.map((r, ri) => (
+                                <li key={ri}>{r}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setExperienceList((p) => p.filter((_, i) => i !== idx))}
+                          style={{ color: '#f87171', padding: '4px', cursor: 'pointer' }}
+                        >
+                          <Trash2 style={{ width: '15px' }} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Section 7: Certifications & Achievements */}
+              <div className="card-section">
+                <h3>Certifications & Achievements</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                  <div>
+                    <span style={{ fontSize: '11px', color: '#6f7b8e', fontFamily: 'DM Mono', letterSpacing: '1px' }}>
+                      CERTIFICATIONS:
+                    </span>
+                    <div className="chips" style={{ marginTop: '8px', marginBottom: 0 }}>
+                      {certificationsList.map((c, i) => (
+                        <span key={i}>
+                          {c}{' '}
+                          <button type="button" onClick={() => setCertificationsList((p) => p.filter((_, idx) => idx !== i))}>
+                            <X style={{ width: '12px' }} />
+                          </button>
+                        </span>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = prompt('Add certification:');
+                          if (val && val.trim()) setCertificationsList((p) => [...p, val.trim()]);
+                        }}
+                      >
+                        + Add cert
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '11px', color: '#6f7b8e', fontFamily: 'DM Mono', letterSpacing: '1px' }}>
+                      ACHIEVEMENTS:
+                    </span>
+                    <div className="chips" style={{ marginTop: '8px', marginBottom: 0 }}>
+                      {achievementsList.map((a, i) => (
+                        <span key={i}>
+                          {a}{' '}
+                          <button type="button" onClick={() => setAchievementsList((p) => p.filter((_, idx) => idx !== i))}>
+                            <X style={{ width: '12px' }} />
+                          </button>
+                        </span>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = prompt('Add achievement / award:');
+                          if (val && val.trim()) setAchievementsList((p) => [...p, val.trim()]);
+                        }}
+                      >
+                        + Add achievement
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+
+          <div className="wizard-actions">
+            {step > 1 && (
+              <button className="secondary" onClick={() => setStep(step - 1)}>
+                Back
+              </button>
+            )}
+            <Pill
+              disabled={
+                saving ||
+                cvStatus === 'uploading' ||
+                cvStatus === 'extracting' ||
+                isParsing ||
+                (step === 4 && unresolvedHighCount > 0)
+              }
+              onClick={() => {
+                if (step === 1) {
+                  handleContinueEducation();
+                } else if (step === 2) {
+                  handleContinueTarget();
+                } else if (step === 3) {
+                  handleProceedToStep4();
+                } else {
+                  handleConfirmProfile();
+                }
+              }}
+            >
+              {saving
+                ? 'Saving profile...'
+                : cvStatus === 'uploading' || cvStatus === 'extracting'
+                ? 'Extracting...'
+                : isParsing
+                ? 'Structuring CV...'
+                : step < 4
+                ? 'Continue'
+                : unresolvedHighCount > 0
+                ? `Resolve ${unresolvedHighCount} high-severity note(s)`
+                : 'Confirm profile & go to dashboard'}
+            </Pill>
+          </div>
+        </div>
+      </main>
+    </Shell>
+  );
+}
+
+function Dashboard({ go }: { go: (p: string) => void }) {
+  const { user } = useAuth();
+  const userName = user?.name || 'Alex';
+
+  return (
+    <Shell go={go}>
+      <main className="app-main">
+        <div className="page-intro">
+          <div>
+            <span className="eyebrow">THURSDAY, OCTOBER 10</span>
+            <h1>
+              Good morning, <em>{userName}.</em>
+            </h1>
+            <p>Small reps make confident answers.</p>
+          </div>
+          <Pill onClick={() => go('/interview/setup')}>Start new interview</Pill>
+        </div>
+        <div className="dash-grid">
+          <div className="score-card">
+            <div>
+              <span className="eyebrow">LAST SESSION · TECHNICAL</span>
+              <h2>Strong signal.</h2>
+              <p>Your clearest session yet. Let&apos;s build on it.</p>
+            </div>
+            <div className="score-ring">
+              <strong>84</strong>
+              <span>/100</span>
+            </div>
+          </div>
+          <div className="stat-card">
+            <span className="eyebrow">PRACTICE STREAK</span>
+            <strong>
+              6 <small>days</small>
+            </strong>
+            <p>Best: 12 days</p>
+            <div className="streak-bars">
+              {[1, 1, 1, 1, 1, 1, 0].map((x, i) => (
+                <i className={x ? 'active' : ''} key={i} />
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="section-head">
+          <h2>Your practice rhythm</h2>
+          <button onClick={() => go('/history')}>
+            View history <ArrowUpRight />
+          </button>
+        </div>
+        <div className="chart-card">
+          <div className="chart-bars">
+            {[48, 62, 55, 73, 68, 84, 78].map((h, i) => (
+              <div key={i}>
+                <i style={{ height: `${h}%` }} />
+                <span>{['Sep 24', 'Sep 29', 'Oct 01', 'Oct 04', 'Oct 06', 'Oct 08', 'Today'][i]}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="section-head">
+          <h2>Recent sessions</h2>
+          <button onClick={() => go('/history')}>
+            See all <ArrowUpRight />
+          </button>
+        </div>
+        <div className="session-list">
+          {sessions.map((s) => (
+            <button className="session-row" key={s.date} onClick={() => go('/report/1')}>
+              <span className="round-dot">{s.round[0]}</span>
+              <div>
+                <strong>{s.round}</strong>
+                <small>
+                  {s.topic} · {s.date}
+                </small>
+              </div>
+              <b>{s.score}</b>
+              <ChevronRight />
+            </button>
+          ))}
+        </div>
+        <div className="next-card">
+          <div>
+            <span className="eyebrow">NEXT BEST REP</span>
+            <h2>Practice your opening.</h2>
+            <p>Your content is strong. A crisp first 30 seconds will make it land.</p>
+          </div>
+          <Pill onClick={() => go('/interview/setup')}>Practise this</Pill>
+        </div>
+      </main>
+    </Shell>
+  );
+}
+
+function Setup({ go }: { go: (p: string) => void }) {
+  const [selected, setSelected] = useState<Round>('Technical');
+  return (
+    <Shell go={go}>
+      <main className="app-main narrow">
+        <div className="page-intro">
+          <div>
+            <span className="eyebrow">NEW INTERVIEW</span>
+            <h1>
+              Choose your <em>challenge.</em>
+            </h1>
+            <p>We&apos;ll tune the room to where you want to grow.</p>
+          </div>
+        </div>
+        <div className="setup-layout">
+          <div>
+            <h3>Round type</h3>
+            <div className="round-select">
+              {rounds.map((r) => (
+                <button className={selected === r ? 'selected' : ''} onClick={() => setSelected(r)} key={r}>
+                  <span>{r === 'Technical' ? '⌘' : r === 'HR' ? '◌' : '◈'}</span>
+                  <strong>{r}</strong>
+                  <small>
+                    {r === 'Technical'
+                      ? 'Problem solving & systems'
+                      : r === 'HR'
+                      ? 'Story & motivation'
+                      : 'Strategy & leadership'}
+                  </small>
+                </button>
+              ))}
+            </div>
+            <div className="settings-card">
+              <label>
+                Difficulty{' '}
+                <select>
+                  <option>Medium</option>
+                  <option>Easy</option>
+                  <option>Hard</option>
+                </select>
+              </label>
+              <label>
+                Duration{' '}
+                <select>
+                  <option>20 minutes</option>
+                  <option>10 minutes</option>
+                  <option>30 minutes</option>
+                </select>
+              </label>
+              <label className="toggle-row">
+                Pressure mode <input type="checkbox" onChange={() => toast.success('Pressure mode updated')} />
+              </label>
+            </div>
+          </div>
+          <aside className="summary">
+            <span className="eyebrow">YOUR SESSION</span>
+            <h2>{selected} round</h2>
+            <p>10 adaptive questions · approx. 20 min</p>
+            <div className="topic-list">
+              {['Communication', 'React architecture', 'Problem solving', 'Clarity'].map((t) => (
+                <span key={t}>
+                  {t} <X />
+                </span>
+              ))}
+            </div>
+            <Pill onClick={() => go('/interview/precheck')}>Continue to system check</Pill>
+          </aside>
+        </div>
+      </main>
+    </Shell>
+  );
+}
+
+function Precheck({ go }: { go: (p: string) => void }) {
+  const [ready, setReady] = useState(false);
+  return (
+    <Shell go={go}>
+      <main className="app-main narrow">
+        <div className="page-intro">
+          <div>
+            <span className="eyebrow">SYSTEM CHECK</span>
+            <h1>
+              Make sure you&apos;re <em>ready.</em>
+            </h1>
+            <p>A quick check of your camera, mic and connection.</p>
+          </div>
+        </div>
+        <div className="precheck-grid">
+          <div className="camera-box">
+            <div className="face-guide" />
+            <span className="camera-label">CAMERA PREVIEW</span>
+          </div>
+          <div className="checks">
+            {[
+              ['Camera', 'Face detected'],
+              ['Microphone', 'Signal is clear'],
+              ['Connection', 'Excellent · 48 Mbps'],
+            ].map((x) => (
+              <div className="check" key={x[0]}>
+                <ShieldCheck />
+                <div>
+                  <strong>{x[0]}</strong>
+                  <small>{x[1]}</small>
+                </div>
+                <b>PASS</b>
+              </div>
+            ))}
+            <label className="consent">
+              <input type="checkbox" onChange={(e) => setReady(e.target.checked)} /> I consent to recording and analysis for this session.
+            </label>
+            <Pill onClick={() => (ready ? go('/interview/live/1') : toast.error('Please give consent to continue'))}>
+              Start interview
+            </Pill>
+            <button className="secondary" onClick={() => go('/interview/setup')}>
+              Back to setup
+            </button>
+          </div>
+        </div>
+      </main>
+    </Shell>
+  );
+}
+
+function Live({ go }: { go: (p: string) => void }) {
+  const [muted, setMuted] = useState(false);
+  const [hint, setHint] = useState(false);
+  return (
+    <Shell go={go}>
+      <main className="live">
+        <div className="live-top">
+          <span className="eyebrow">TECHNICAL · QUESTION 04 / 10</span>
+          <button className="end" onClick={() => go('/interview/processing/1')}>
+            End interview <X />
+          </button>
+        </div>
+        <div className="live-center">
+          <div className="interviewer">
+            <div className="orb small">
+              <div className="orb-face">
+                <span />
+                <span />
+                <b />
+              </div>
+            </div>
+            <span className="eyebrow">LISTENING</span>
+          </div>
+          <h1>
+            Walk me through a system you&apos;ve<br />
+            <em>designed for scale.</em>
+          </h1>
+          <p className="caption">Take your time. Think out loud.</p>
+          <div className="live-actions">
+            <button onClick={() => setMuted(!muted)} className={muted ? 'active' : ''}>
+              <Mic2 /> {muted ? 'Unmute' : 'Mute'}
+            </button>
+            <button onClick={() => toast.success('Question repeated')}>
+              <ChevronDown /> Repeat question
+            </button>
+            <button onClick={() => setHint(!hint)}>
+              <Sparkles /> Hint
+            </button>
+            <Pill onClick={() => toast.success('Answer submitted — next question loading')}>Done answering</Pill>
+          </div>
+          {hint && <div className="hint">Try structuring your answer around trade-offs, constraints and the outcome.</div>}
+        </div>
+        <div className="metrics">
+          <div>
+            <span>CONFIDENCE</span>
+            <strong>82%</strong>
+          </div>
+          <div>
+            <span>EYE CONTACT</span>
+            <strong>76%</strong>
+          </div>
+          <div>
+            <span>SPEAKING PACE</span>
+            <strong>
+              142 <small>WPM</small>
+            </strong>
+          </div>
+        </div>
+      </main>
+    </Shell>
+  );
+}
+
+function Processing({ go }: { go: (p: string) => void }) {
+  useEffect(() => {
+    const t = setTimeout(() => go('/report/1'), 1800);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <Shell go={go}>
+      <main className="processing">
+        <div className="orb small">
+          <div className="orb-face">
+            <span />
+            <span />
+            <b />
+          </div>
+        </div>
+        <span className="eyebrow">SESSION COMPLETE</span>
+        <h1>
+          Making sense<br />
+          <em>of your signal.</em>
+        </h1>
+        <div className="process-list">
+          {['Transcribing your answers', 'Analysing speech patterns', 'Scoring your responses', 'Writing your report'].map((x, i) => (
+            <div key={x}>
+              <span>✓</span>
+              {x}
+              <small>{i < 2 ? 'COMPLETE' : 'IN PROGRESS'}</small>
+            </div>
+          ))}
+        </div>
+        <button className="secondary" onClick={() => go('/dashboard')}>
+          Cancel and return
+        </button>
+      </main>
+    </Shell>
+  );
+}
+
+function Report({ go }: { go: (p: string) => void }) {
+  const [open, setOpen] = useState(0);
+  return (
+    <Shell go={go}>
+      <main className="app-main">
+        <div className="report-header">
+          <div>
+            <span className="eyebrow">TECHNICAL ROUND · OCT 08, 2025</span>
+            <h1>
+              Your signal is <em>strong.</em>
+            </h1>
+            <p>18 min session · 10 questions · Adaptive difficulty</p>
+          </div>
+          <div className="report-actions">
+            <button onClick={() => toast.success('Report link copied')}>Share</button>
+            <Pill onClick={() => toast.success('PDF export prepared')}>Download PDF</Pill>
+          </div>
+        </div>
+        <div className="report-overview">
+          <div className="score-ring large">
+            <strong>84</strong>
+            <span>OVERALL SCORE</span>
+          </div>
+          <div className="subscores">
+            {[
+              ['Content', '91'],
+              ['Speech confidence', '78'],
+              ['Body language', '82'],
+              ['Communication', '86'],
+            ].map((x) => (
+              <div key={x[0]}>
+                <span>{x[0]}</span>
+                <strong>{x[1]}</strong>
+                <i>
+                  <b style={{ width: `${x[1]}%` }} />
+                </i>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="section-head">
+          <h2>Question breakdown</h2>
+          <button onClick={() => toast.success('Showing all dimensions')}>
+            Compare previous <ArrowUpRight />
+          </button>
+        </div>
+        <div className="question-list">
+          {['Tell me about a system you designed for scale.', 'How do you handle a disagreement with a teammate?', 'What trade-off would you make under pressure?'].map(
+            (q, i) => (
+              <div className="question" key={q}>
+                <button onClick={() => setOpen(open === i ? -1 : i)}>
+                  <span>0{i + 1}</span>
+                  <strong>{q}</strong>
+                  <b>{[91, 78, 84][i]}</b>
+                  <ChevronDown className={open === i ? 'rotate' : ''} />
+                </button>
+                {open === i && (
+                  <div className="answer">
+                    <span className="eyebrow">YOUR TRANSCRIPT</span>
+                    <p>I&apos;d start by clarifying the constraints and the users we need to serve. From there, I&apos;d think through the trade-offs...</p>
+                    <div className="feedback">
+                      <strong>Good structure</strong>
+                      <span>Your answer was clear and grounded in a real decision. Add a measurable outcome next time.</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          )}
+        </div>
+        <div className="next-card">
+          <div>
+            <span className="eyebrow">KEEP THE MOMENTUM</span>
+            <h2>One more rep?</h2>
+            <p>Try a managerial round to practise your strategic thinking.</p>
+          </div>
+          <Pill onClick={() => go('/interview/setup')}>Next round</Pill>
+        </div>
+      </main>
+    </Shell>
+  );
+}
+
+function History({ go }: { go: (p: string) => void }) {
+  return (
+    <Shell go={go}>
+      <main className="app-main">
+        <div className="page-intro">
+          <div>
+            <span className="eyebrow">YOUR PRACTICE LOG</span>
+            <h1>
+              Every rep <em>counts.</em>
+            </h1>
+            <p>Five sessions, one clearer signal.</p>
+          </div>
+          <button className="secondary" onClick={() => toast.success('CSV export prepared')}>
+            Export all as CSV
+          </button>
+        </div>
+        <div className="history-tabs">
+          <button className="active">All sessions</button>
+          <button>Technical</button>
+          <button>HR</button>
+          <button>Managerial</button>
+        </div>
+        <div className="session-list history-list">
+          {sessions.map((s, i) => (
+            <button className="session-row" key={s.date} onClick={() => go('/report/1')}>
+              <span className="round-dot">0{i + 1}</span>
+              <div>
+                <strong>{s.round} round</strong>
+                <small>
+                  {s.topic} · {s.date} · {s.time}
+                </small>
+              </div>
+              <b>
+                {s.score}
+                <small>/100</small>
+              </b>
+              <ChevronRight />
+            </button>
+          ))}
+        </div>
+      </main>
+    </Shell>
+  );
+}
+
+function Settings({ go }: { go: (p: string) => void }) {
+  const { user, logout } = useAuth();
+  const [t, setT] = useState('Profile');
+
+  return (
+    <Shell go={go}>
+      <main className="app-main settings">
+        <div className="page-intro">
+          <div>
+            <span className="eyebrow">YOUR SPACE</span>
+            <h1>
+              Settings & <em>preferences.</em>
+            </h1>
+          </div>
+        </div>
+        <div className="settings-layout">
+          <nav>
+            {['Profile', 'CV', 'Preferences', 'Privacy'].map((x) => (
+              <button className={t === x ? 'active' : ''} onClick={() => setT(x)} key={x}>
+                {x}
+              </button>
+            ))}
+            <button
+              className="logout"
+              onClick={async () => {
+                await logout();
+                toast.success('Logged out');
+                go('/login');
+              }}
+            >
+              Log out
+            </button>
+          </nav>
+          <div className="settings-panel">
+            <span className="eyebrow">{t.toUpperCase()}</span>
+            <h2>
+              {t === 'Profile'
+                ? 'Your practice profile'
+                : t === 'CV'
+                ? 'Your current CV'
+                : t === 'Preferences'
+                ? 'Make it feel like yours'
+                : 'Control your data'}
+            </h2>
+            {t === 'Privacy' ? (
+              <>
+                <p className="muted">Your recordings and analysis stay yours.</p>
+                <button className="danger" onClick={() => toast.success('All recordings deleted')}>
+                  Delete all my recordings
+                </button>
+                <button
+                  className="danger"
+                  onClick={async () => {
+                    await logout();
+                    toast.success('Account data cleared');
+                    go('/');
+                  }}
+                >
+                  Delete my account
+                </button>
+              </>
+            ) : (
+              <>
+                <label>
+                  Name
+                  <input key={user?.name || 'Alex Kumar'} defaultValue={user?.name || 'Alex Kumar'} />
+                </label>
+                <label>
+                  Target role
+                  <input defaultValue="Frontend Engineer" />
+                </label>
+                <label className="toggle-row">
+                  Interviewer voice <input type="checkbox" defaultChecked />
+                </label>
+                <Pill onClick={() => toast.success('Settings saved')}>Save changes</Pill>
+              </>
+            )}
+          </div>
+        </div>
+      </main>
+    </Shell>
+  );
+}
+
+function NotFound({ go }: { go: (p: string) => void }) {
+  return (
+    <Shell go={go}>
+      <main className="not-found">
+        <span className="eyebrow">ERROR 404</span>
+        <h1>
+          Wrong <em>room.</em>
+        </h1>
+        <p>This page doesn&apos;t exist, but your next great answer might.</p>
+        <Pill onClick={() => go('/')}>Back home</Pill>
+      </main>
+    </Shell>
+  );
+}
+
+createRoot(document.getElementById('root')!).render(
+  <BrowserRouter>
+    <App />
+  </BrowserRouter>
+);

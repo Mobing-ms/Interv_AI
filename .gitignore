@@ -1,0 +1,30 @@
+# Frontend dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Frontend build & cache
+*.tsbuildinfo
+.vite/
+.eslintcache
+
+# Backend Python
+backend/venv/
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+backend/*.db
+backend/**/*.db
+backend/storage/cv_uploads/*
+!backend/storage/cv_uploads/.gitkeep
+
+# Environment secrets & local files
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# OS files
+.DS_Store
+Thumbs.db

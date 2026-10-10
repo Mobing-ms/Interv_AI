@@ -1,0 +1,1 @@
+"""IntervAI backend app package."""
