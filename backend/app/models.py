@@ -20,6 +20,9 @@ class User(Base):
     target_profile = relationship("TargetProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
     cv_documents = relationship("CVDocument", back_populates="user", cascade="all, delete-orphan", order_by="desc(CVDocument.created_at)")
     profiles = relationship("Profile", back_populates="user", cascade="all, delete-orphan", order_by="desc(Profile.version)")
+    interview_configs = relationship("InterviewConfig", back_populates="user", cascade="all, delete-orphan", order_by="desc(InterviewConfig.created_at)")
+    memory = relationship("UserMemory", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    asked_questions = relationship("AskedQuestion", back_populates="user", cascade="all, delete-orphan", order_by="desc(AskedQuestion.asked_at)")
 
 
 class EmailOTP(Base):
@@ -99,4 +102,50 @@ class Profile(Base):
 
     user = relationship("User", back_populates="profiles")
     cv_document = relationship("CVDocument")
+
+
+class InterviewConfig(Base):
+    __tablename__ = "interview_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    round_type = Column(String(50), nullable=False)  # Technical, HR, Managerial, Mixed
+    difficulty = Column(String(50), nullable=False)  # Easy, Medium, Hard, Adaptive
+    duration_minutes = Column(Integer, nullable=False)  # 15, 30, 45, etc.
+    language = Column(String(50), default="English", nullable=False)
+    mode = Column(String(50), default="normal", nullable=False)  # normal, pressure
+    focus_topics = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    user = relationship("User", back_populates="interview_configs")
+
+
+class UserMemory(Base):
+    __tablename__ = "user_memories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    topic_scores = Column(JSON, default=dict, nullable=False)  # {"React architecture": 68.0, ...}
+    weak_topics = Column(JSON, default=list, nullable=False)   # ["React architecture", "Clarity"]
+    session_count = Column(Integer, default=0, nullable=False)
+    last_session_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+    user = relationship("User", back_populates="memory")
+
+
+class AskedQuestion(Base):
+    __tablename__ = "asked_questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_hash = Column(String(64), nullable=False, index=True)
+    topic = Column(String(100), nullable=False, index=True)
+    question_text = Column(Text, nullable=True)
+    asked_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    score = Column(Float, nullable=True)
+
+    user = relationship("User", back_populates="asked_questions")
+
 

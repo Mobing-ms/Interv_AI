@@ -328,3 +328,87 @@ class ProfileOut(BaseModel):
         from_attributes = True
 
 
+# --- Phase 2.1 Interview Setup & Memory Schemas ---
+
+VALID_ROUND_TYPES = ["Technical", "HR", "Managerial", "Mixed"]
+VALID_DIFFICULTIES = ["Easy", "Medium", "Hard", "Adaptive"]
+VALID_MODES = ["normal", "pressure"]
+VALID_DURATIONS = [10, 15, 20, 30, 45, 60]
+
+
+class InterviewConfigCreate(BaseModel):
+    round_type: str = Field(..., description="Round type: Technical, HR, Managerial, Mixed")
+    difficulty: str = Field(default="Medium", description="Difficulty: Easy, Medium, Hard, Adaptive")
+    duration_minutes: int = Field(default=30, description="Duration in minutes (e.g. 15, 30, 45)")
+    language: str = Field(default="English", description="Interview language (e.g. English)")
+    mode: str = Field(default="normal", description="Mode: normal or pressure")
+    focus_topics: Optional[List[str]] = Field(default_factory=list, description="Target topics or weak areas")
+
+    @model_validator(mode="after")
+    def validate_fields(self):
+        # Case-insensitive normalization
+        round_matched = next((r for r in VALID_ROUND_TYPES if r.lower() == self.round_type.strip().lower()), None)
+        if not round_matched:
+            raise ValueError(f"Invalid round_type '{self.round_type}'. Must be one of: {', '.join(VALID_ROUND_TYPES)}")
+        self.round_type = round_matched
+
+        diff_matched = next((d for d in VALID_DIFFICULTIES if d.lower() == self.difficulty.strip().lower()), None)
+        if not diff_matched:
+            raise ValueError(f"Invalid difficulty '{self.difficulty}'. Must be one of: {', '.join(VALID_DIFFICULTIES)}")
+        self.difficulty = diff_matched
+
+        mode_clean = self.mode.strip().lower()
+        if mode_clean not in VALID_MODES:
+            raise ValueError(f"Invalid mode '{self.mode}'. Must be one of: {', '.join(VALID_MODES)}")
+        self.mode = mode_clean
+
+        if self.duration_minutes < 5 or self.duration_minutes > 120:
+            raise ValueError("duration_minutes must be between 5 and 120 minutes")
+
+        return self
+
+
+class InterviewConfigOut(BaseModel):
+    id: int
+    user_id: int
+    round_type: str
+    difficulty: str
+    duration_minutes: int
+    language: str
+    mode: str
+    focus_topics: Optional[List[str]] = Field(default_factory=list)
+    answer_timer_seconds: int = 120
+    pressure_rules: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AskedQuestionOut(BaseModel):
+    id: int
+    question_hash: str
+    topic: str
+    question_text: Optional[str] = None
+    asked_at: datetime
+    score: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UserContextOut(BaseModel):
+    is_returning: bool
+    session_count: int
+    last_session_at: Optional[datetime] = None
+    past_scores: Dict[str, float] = Field(default_factory=dict)
+    weak_areas: List[str] = Field(default_factory=list)
+    history_asked_questions: List[AskedQuestionOut] = Field(default_factory=list)
+    baseline_weights: Dict[str, float] = Field(default_factory=dict)
+    recommended_difficulty: str = "Medium"
+    recommended_round: str = "Technical"
+    recommended_duration: int = 30
+    mode_presets: Dict[str, Any] = Field(default_factory=dict)
+
+
+

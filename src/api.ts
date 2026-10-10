@@ -400,6 +400,27 @@ export const api = {
       method: 'GET',
     });
   },
+
+  // --- Phase 2.1 Interview Setup & Memory Context ---
+
+  async getInterviewContext(): Promise<UserContext> {
+    return request<UserContext>('/interview/context', { method: 'GET' });
+  },
+
+  async saveInterviewConfig(payload: InterviewConfigCreate): Promise<InterviewConfig> {
+    return request<InterviewConfig>('/interview/config', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async getLatestInterviewConfig(): Promise<InterviewConfig> {
+    return request<InterviewConfig>('/interview/config/latest', { method: 'GET' });
+  },
+
+  async seedInterviewHistory(): Promise<UserContext> {
+    return request<UserContext>('/interview/seed-history', { method: 'POST' });
+  },
 };
 
 export interface ConfirmedProfile {
@@ -409,6 +430,52 @@ export interface ConfirmedProfile {
   structured_data: StructuredCV;
   cv_document_id?: number | null;
   confirmed_at: string;
+  created_at: string;
+}
+
+export interface AskedQuestionItem {
+  id: number;
+  question_hash: string;
+  topic: string;
+  question_text?: string | null;
+  asked_at: string;
+  score?: number | null;
+}
+
+export interface UserContext {
+  is_returning: boolean;
+  session_count: number;
+  last_session_at?: string | null;
+  past_scores: Record<string, number>;
+  weak_areas: string[];
+  history_asked_questions: AskedQuestionItem[];
+  baseline_weights: Record<string, number>;
+  recommended_difficulty: string;
+  recommended_round: string;
+  recommended_duration: number;
+  mode_presets: Record<string, any>;
+}
+
+export interface InterviewConfigCreate {
+  round_type: string;
+  difficulty: string;
+  duration_minutes: number;
+  language?: string;
+  mode?: string;
+  focus_topics?: string[];
+}
+
+export interface InterviewConfig {
+  id: number;
+  user_id: number;
+  round_type: string;
+  difficulty: string;
+  duration_minutes: number;
+  language: string;
+  mode: string;
+  focus_topics: string[];
+  answer_timer_seconds: number;
+  pressure_rules: Record<string, any>;
   created_at: string;
 }
 

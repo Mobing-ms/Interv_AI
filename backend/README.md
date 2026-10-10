@@ -36,7 +36,12 @@ FastAPI backend for IntervAI, an AI mock-interview platform.
 - `PUT /profile/confirm`: Validates that no unresolved `HIGH`-severity flags remain. Saves user's canonical structured profile to the `profiles` table, increments `version = previous + 1`, and marks user's onboarding status as `profile_confirmed`. Returns the saved `ProfileOut`.
 - `GET /profile`: Retrieves user's latest confirmed canonical profile (`ProfileOut`).
 - `GET /profile/versions`: Returns profile revision history (version list with timestamps and associated CV IDs).
-- Re-upload capability: Supports re-uploading a new CV later or editing profile cards, generating subsequent versions (`version 2, 3, ...`) while preserving full edit history.
+### Phase 2.1: Interview Setup & Returning-User Check
+- `POST /interview/config`: Validates and saves interview configuration (`round_type`, `difficulty`, `duration_minutes`, `language`, `mode`, `focus_topics`). Sets `answer_timer_seconds` (60s for pressure mode, 120s for normal) and probing rules.
+- `GET /interview/context`: Analyzes user memory. If new candidate, returns default baseline weights (equal weights across topics) and medium difficulty. If returning candidate, loads past topic scores, identified weak-area tags, previous asked questions (to avoid repeats), and adaptive recommendations.
+- `GET /interview/config/latest`: Retrieves the candidate's latest interview configuration.
+- `POST /interview/seed-history`: Dev endpoint / script to seed fake interview history (scores, weak areas, asked questions) to test returning candidate behavior.
+- Seed script (`seed_user_history.py`): Run `python seed_user_history.py [email]` to simulate past sessions.
 
 ## How to Run
 
@@ -64,4 +69,9 @@ python test_phase1_2.py
 python test_cv.py
 python test_cv_phase1_4.py
 python test_profile_phase1_5.py
+python test_interview_phase2_1.py
+```
+To seed fake interview history for testing returning users:
+```bash
+python seed_user_history.py
 ```

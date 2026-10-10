@@ -77,25 +77,41 @@ cd c:\Users\soory\Downloads\InterAI\backend
 .\venv\Scripts\python.exe test_cv.py
 .\venv\Scripts\python.exe test_cv_phase1_4.py
 .\venv\Scripts\python.exe test_profile_phase1_5.py
+.\venv\Scripts\python.exe test_interview_phase2_1.py
+```
+
+To seed simulated returning-candidate history:
+```powershell
+.\venv\Scripts\python.exe seed_user_history.py
 ```
 
 ---
 
-## 4. Phase 2 Roadmap & Product Flow
+## 4. Phase 2 Progress & Architecture
 
-When the user returns with Phase 2 prompts, the goal is **Phase 2: Interview Setup**:
-- **Selection Parameters**:
-  - Round Type: `Technical`, `HR`, `Managerial`, `Mixed`
-  - Difficulty: `Easy`, `Medium`, `Hard`, `Adaptive`
-  - Duration: e.g. 15 min, 30 min, 45 min, 60 min
-  - Language: English (and any additional languages)
-  - Mode: `Normal` or `Pressure Mode`
-- **Memory & Past Profile Reading**:
-  - Read user's confirmed canonical profile (`GET /profile`) from Phase 1.5.
-  - If returning user: load past session scores, weak areas, and question history.
-  - If new user: use default role weights based on target company type and role.
-- **Interview Blueprint Generator**:
-  - Build interview blueprint with topic weights, question types, and target competencies.
-- **Seed Question Pool (LLM)**:
-  - Generate candidate questions customized to user's canonical CV projects, target role, and chosen round type.
-  - Deduplicate, tag with topics/difficulty, rank, and persist into Question Bank.
+### Phase 2.1: Interview Setup & Returning-User Check (100% Complete & Verified)
+- **Models**:
+  - `InterviewConfig`: `id`, `user_id`, `round_type` (Technical, HR, Managerial, Mixed), `difficulty` (Easy, Medium, Hard, Adaptive), `duration_minutes` (15, 30, 45, 60), `language`, `mode` (normal, pressure), `focus_topics`, `created_at`.
+  - `UserMemory`: `id`, `user_id`, `topic_scores` JSON, `weak_topics` JSON, `session_count`, `last_session_at`, timestamps.
+  - `AskedQuestion`: `id`, `user_id`, `question_hash`, `topic`, `question_text`, `asked_at`, `score`.
+- **Service `load_user_context(user_id, db)`**:
+  - New users: returns `is_returning=False`, default baseline equal weights (0.25 each), Medium difficulty start.
+  - Returning users: loads `is_returning=True`, past scores, identified weak-area tags, history of asked questions (to avoid repeats), and weak-area boosted weights.
+- **Endpoints**:
+  - `POST /interview/config`: Validates and saves setup, computes `answer_timer_seconds` (60s for pressure mode, 120s for normal).
+  - `GET /interview/context`: Returns candidate memory and recommendations.
+  - `GET /interview/config/latest`: Returns candidate's most recent configuration.
+  - `POST /interview/seed-history`: Dev endpoint to simulate candidate history.
+- **Frontend Setup Screen (`Setup` in `main.tsx`)**:
+  - Round selector: Technical, HR, Managerial, Mixed.
+  - Difficulty: Easy, Medium, Hard, Adaptive.
+  - Duration: 15, 30, 45, 60 min.
+  - Language: English, Spanish, German, French, Hindi.
+  - Pressure Mode toggle: Active callout highlighting 60s answer limits and aggressive follow-up challenges.
+  - Returning Candidate Badge: Displays `Session #{N+1}`, weak areas quick-add buttons, past topic scores, and prior questions index indicator.
+  - New Candidate Badge: Displays baseline evaluation indicator.
+  - Saved to `POST /interview/config` before transitioning to precheck.
+
+### Upcoming Next in Phase 2
+- **Phase 2.2**: Interview Blueprint & LLM Seed Question Pool (blueprint generator, seed question generation from CV & round type, dedupe, tag, rank, Question Bank persistence).
+

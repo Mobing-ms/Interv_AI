@@ -11,6 +11,7 @@ import app.models  # Register all models
 from app.routers.auth import router as auth_router, limiter
 from app.routers.profile import router as profile_router
 from app.routers.cv import router as cv_router
+from app.routers.interview import router as interview_router
 
 
 @asynccontextmanager
@@ -57,6 +58,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(profile_router)
 app.include_router(cv_router)
+app.include_router(interview_router)
 
 
 @app.get("/")

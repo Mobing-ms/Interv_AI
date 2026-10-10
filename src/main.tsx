@@ -24,12 +24,12 @@ import {
   Zap,
 } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
-import { api, ApiError, User, StructuredCV, CrossCheckFlag, ConfirmedProfile } from './api';
+import { api, ApiError, User, StructuredCV, CrossCheckFlag, ConfirmedProfile, UserContext, InterviewConfig } from './api';
 import { AuthProvider, useAuth } from './authContext';
 import './styles.css';
 
-type Round = 'Technical' | 'HR' | 'Managerial';
-const rounds: Round[] = ['Technical', 'HR', 'Managerial'];
+type Round = 'Technical' | 'HR' | 'Managerial' | 'Mixed';
+const rounds: Round[] = ['Technical', 'HR', 'Managerial', 'Mixed'];
 const sessions = [
   { round: 'Technical', score: 84, date: 'Oct 08', time: '18 min', topic: 'React architecture' },
   { round: 'HR', score: 78, date: 'Oct 04', time: '14 min', topic: 'Leadership' },
@@ -2150,70 +2150,322 @@ function Dashboard({ go }: { go: (p: string) => void }) {
 
 function Setup({ go }: { go: (p: string) => void }) {
   const [selected, setSelected] = useState<Round>('Technical');
+  const [difficulty, setDifficulty] = useState<string>('Medium');
+  const [duration, setDuration] = useState<number>(30);
+  const [language, setLanguage] = useState<string>('English');
+  const [isPressureMode, setIsPressureMode] = useState<boolean>(false);
+  const [focusTopics, setFocusTopics] = useState<string[]>(['Communication', 'Problem solving', 'Architecture & design']);
+  const [newTopicInput, setNewTopicInput] = useState<string>('');
+
+  const [userContext, setUserContext] = useState<UserContext | null>(null);
+  const [loadingContext, setLoadingContext] = useState<boolean>(true);
+  const [saving, setSaving] = useState<boolean>(false);
+
+  useEffect(() => {
+    async function loadContext() {
+      setLoadingContext(true);
+      try {
+        const ctx = await api.getInterviewContext();
+        setUserContext(ctx);
+
+        if (ctx.is_returning) {
+          if (ctx.recommended_difficulty) {
+            setDifficulty(ctx.recommended_difficulty);
+          }
+          if (ctx.weak_areas && ctx.weak_areas.length > 0) {
+            // Prioritize weak areas as initial focus topics
+            setFocusTopics(Array.from(new Set([...ctx.weak_areas, 'Problem solving'])));
+          }
+        }
+      } catch {
+        // Fallback to default state
+      } finally {
+        setLoadingContext(false);
+      }
+    }
+    loadContext();
+  }, []);
+
+  const handleAddTopic = () => {
+    const trimmed = newTopicInput.trim();
+    if (trimmed && !focusTopics.includes(trimmed)) {
+      setFocusTopics([...focusTopics, trimmed]);
+      setNewTopicInput('');
+    }
+  };
+
+  const handleRemoveTopic = (topicToRemove: string) => {
+    setFocusTopics(focusTopics.filter((t) => t !== topicToRemove));
+  };
+
+  const handleSaveAndContinue = async () => {
+    setSaving(true);
+    try {
+      const mode = isPressureMode ? 'pressure' : 'normal';
+      await api.saveInterviewConfig({
+        round_type: selected,
+        difficulty,
+        duration_minutes: duration,
+        language,
+        mode,
+        focus_topics: focusTopics,
+      });
+
+      toast.success(
+        `${selected} round configured (${isPressureMode ? '⚡ Pressure' : 'Normal'} mode, ${duration} min)`
+      );
+      go('/interview/precheck');
+    } catch (err: any) {
+      toast.error(err.detail || 'Failed to save interview configuration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const isReturning = userContext?.is_returning ?? false;
+  const sessionCount = userContext?.session_count ?? 0;
+  const weakAreas = userContext?.weak_areas ?? [];
+  const pastScores = userContext?.past_scores ?? {};
+
   return (
     <Shell go={go}>
       <main className="app-main narrow">
         <div className="page-intro">
           <div>
-            <span className="eyebrow">NEW INTERVIEW</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+              <span className="eyebrow">NEW INTERVIEW</span>
+              {loadingContext ? (
+                <span className="returning-badge new">Loading history...</span>
+              ) : isReturning ? (
+                <span className="returning-badge returning">
+                  ★ Returning Candidate · Session #{sessionCount + 1}
+                </span>
+              ) : (
+                <span className="returning-badge new">
+                  ● New Candidate · Baseline Tuning
+                </span>
+              )}
+            </div>
             <h1>
               Choose your <em>challenge.</em>
             </h1>
-            <p>We&apos;ll tune the room to where you want to grow.</p>
+            <p>
+              {isReturning
+                ? 'Your interview is personalized based on past weak areas and performance history.'
+                : "We'll tune the room to evaluate your baseline strengths and growth areas."}
+            </p>
           </div>
         </div>
+
         <div className="setup-layout">
           <div>
             <h3>Round type</h3>
-            <div className="round-select">
+            <div className="round-select" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
               {rounds.map((r) => (
                 <button className={selected === r ? 'selected' : ''} onClick={() => setSelected(r)} key={r}>
-                  <span>{r === 'Technical' ? '⌘' : r === 'HR' ? '◌' : '◈'}</span>
+                  <span>{r === 'Technical' ? '⌘' : r === 'HR' ? '◌' : r === 'Managerial' ? '◈' : '❖'}</span>
                   <strong>{r}</strong>
                   <small>
                     {r === 'Technical'
-                      ? 'Problem solving & systems'
+                      ? 'Problem solving & code'
                       : r === 'HR'
-                      ? 'Story & motivation'
-                      : 'Strategy & leadership'}
+                      ? 'Culture, story & motivation'
+                      : r === 'Managerial'
+                      ? 'Strategy & leadership'
+                      : 'Cross-functional mix'}
                   </small>
                 </button>
               ))}
             </div>
+
             <div className="settings-card">
               <label>
-                Difficulty{' '}
-                <select>
-                  <option>Medium</option>
-                  <option>Easy</option>
-                  <option>Hard</option>
+                Difficulty
+                <select value={difficulty} onChange={(e) => setDifficulty(e.target.value)}>
+                  <option value="Adaptive">Adaptive (Dynamic)</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Easy">Easy</option>
+                  <option value="Hard">Hard</option>
                 </select>
               </label>
+
               <label>
-                Duration{' '}
-                <select>
-                  <option>20 minutes</option>
-                  <option>10 minutes</option>
-                  <option>30 minutes</option>
+                Duration
+                <select value={duration} onChange={(e) => setDuration(parseInt(e.target.value, 10))}>
+                  <option value={15}>15 minutes (Quick rep)</option>
+                  <option value={30}>30 minutes (Standard)</option>
+                  <option value={45}>45 minutes (In-depth)</option>
+                  <option value={60}>60 minutes (Comprehensive)</option>
                 </select>
               </label>
-              <label className="toggle-row">
-                Pressure mode <input type="checkbox" onChange={() => toast.success('Pressure mode updated')} />
+
+              <label>
+                Language
+                <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+                  <option value="English">English</option>
+                  <option value="Spanish">Spanish</option>
+                  <option value="German">German</option>
+                  <option value="French">French</option>
+                  <option value="Hindi">Hindi</option>
+                </select>
+              </label>
+
+              <label className="toggle-row" style={{ marginTop: '22px' }}>
+                <div>
+                  <strong style={{ display: 'block', fontSize: '13px', color: '#e2e8f0' }}>Pressure mode</strong>
+                  <small style={{ color: '#94a3b8', fontSize: '11px' }}>Shorter timers & tougher follow-ups</small>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={isPressureMode}
+                  onChange={(e) => setIsPressureMode(e.target.checked)}
+                />
               </label>
             </div>
-          </div>
-          <aside className="summary">
-            <span className="eyebrow">YOUR SESSION</span>
-            <h2>{selected} round</h2>
-            <p>10 adaptive questions · approx. 20 min</p>
-            <div className="topic-list">
-              {['Communication', 'React architecture', 'Problem solving', 'Clarity'].map((t) => (
-                <span key={t}>
-                  {t} <X />
-                </span>
-              ))}
+
+            {/* Pressure mode highlight banner */}
+            <div className={`pressure-card ${isPressureMode ? '' : 'normal'}`}>
+              {isPressureMode ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, marginBottom: '4px' }}>
+                    <Zap style={{ width: '15px', height: '15px', color: '#f87171' }} />
+                    Pressure Mode Active
+                  </div>
+                  <span>
+                    Shorter 60s answer limits, surprise interruptions, and aggressive follow-up challenges apply to test composure under stress.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, marginBottom: '4px' }}>
+                    <Clock3 style={{ width: '15px', height: '15px', color: '#60a5fa' }} />
+                    Standard Pacing Mode
+                  </div>
+                  <span>
+                    Standard 120s answer limits with supportive follow-ups and conversational guidance.
+                  </span>
+                </>
+              )}
             </div>
-            <Pill onClick={() => go('/interview/precheck')}>Continue to system check</Pill>
+
+            {/* Returning Candidate Prior Insights */}
+            {isReturning && weakAreas.length > 0 && (
+              <div style={{ marginTop: '24px', padding: '16px', borderRadius: '14px', background: '#12151b', border: '1px solid #ffffff0d' }}>
+                <span className="eyebrow" style={{ color: '#f87171' }}>
+                  TARGETED WEAK AREAS FROM PAST SESSIONS
+                </span>
+                <p style={{ fontSize: '12px', color: '#9ca3af', margin: '6px 0 10px' }}>
+                  Click to add any weak area to this interview&apos;s active target topics:
+                </p>
+                <div className="weak-badge-row">
+                  {weakAreas.map((w) => (
+                    <button
+                      key={w}
+                      type="button"
+                      className="weak-chip"
+                      onClick={() => {
+                        if (!focusTopics.includes(w)) {
+                          setFocusTopics([...focusTopics, w]);
+                          toast.success(`Added '${w}' to target focus topics`);
+                        }
+                      }}
+                    >
+                      <Target style={{ width: '12px', height: '12px' }} />
+                      {w} {focusTopics.includes(w) ? '✓' : '+'}
+                    </button>
+                  ))}
+                </div>
+
+                {Object.keys(pastScores).length > 0 && (
+                  <>
+                    <span className="eyebrow" style={{ display: 'block', marginTop: '12px' }}>
+                      PAST TOPIC SCORES
+                    </span>
+                    <div className="score-pill-row">
+                      {Object.entries(pastScores).map(([topic, score]) => (
+                        <div key={topic} className="score-pill">
+                          <span style={{ color: '#cbd5e1' }}>{topic}</span>
+                          <b>{score}%</b>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Sidebar Summary */}
+          <aside className="summary">
+            <span className="eyebrow">YOUR SESSION BLUEPRINT</span>
+            <h2>{selected} round</h2>
+            <p>
+              ~{Math.round(duration / 3)} adaptive questions · approx. {duration} min ·{' '}
+              <b style={{ color: isPressureMode ? '#f87171' : '#60a5fa' }}>
+                {isPressureMode ? 'Pressure' : 'Normal'}
+              </b>
+            </p>
+
+            <div style={{ margin: '20px 0 10px' }}>
+              <span className="eyebrow">FOCUS TOPICS</span>
+              <div className="topic-list" style={{ margin: '10px 0 12px' }}>
+                {focusTopics.map((t) => (
+                  <span key={t}>
+                    {t}{' '}
+                    <button type="button" onClick={() => handleRemoveTopic(t)} style={{ padding: 0 }}>
+                      <X style={{ width: '12px', height: '12px' }} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                <input
+                  style={{
+                    flex: 1,
+                    background: '#0d1117',
+                    border: '1px solid #ffffff15',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                    fontSize: '12px',
+                    color: '#fff',
+                  }}
+                  placeholder="Add custom topic..."
+                  value={newTopicInput}
+                  onChange={(e) => setNewTopicInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddTopic();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handleAddTopic}
+                  style={{
+                    background: '#1e293b',
+                    border: '1px solid #ffffff20',
+                    borderRadius: '8px',
+                    padding: '8px 14px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+
+            {userContext && userContext.history_asked_questions.length > 0 && (
+              <div style={{ fontSize: '11px', color: '#94a3b8', margin: '14px 0 20px', fontFamily: 'DM Mono, monospace' }}>
+                ✓ {userContext.history_asked_questions.length} past questions indexed to prevent repeats
+              </div>
+            )}
+
+            <Pill disabled={saving} onClick={handleSaveAndContinue}>
+              {saving ? 'Configuring room...' : 'Continue to system check'}
+            </Pill>
           </aside>
         </div>
       </main>
