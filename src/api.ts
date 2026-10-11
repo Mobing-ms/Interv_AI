@@ -523,6 +523,36 @@ export const api = {
       body: JSON.stringify({ text, language }),
     });
   },
+
+  async finalizeSession(sessionId: number, sync: boolean = false): Promise<any> {
+    return request(`/session/${sessionId}/finalize?sync=${sync}`, {
+      method: 'POST',
+    });
+  },
+
+  async getAnalysisStatus(sessionId: number): Promise<AnalysisStatus> {
+    return request<AnalysisStatus>(`/session/${sessionId}/analysis-status`, {
+      method: 'GET',
+    });
+  },
+
+  async getAlignedData(sessionId: number): Promise<any> {
+    return request(`/session/${sessionId}/aligned-data`, {
+      method: 'GET',
+    });
+  },
+
+  async getSessionScores(sessionId: number): Promise<SessionScoresResponse> {
+    return request<SessionScoresResponse>(`/session/${sessionId}/scores`, {
+      method: 'GET',
+    });
+  },
+
+  async getSessionResult(sessionId: number): Promise<SessionResultData> {
+    return request<SessionResultData>(`/session/${sessionId}/result`, {
+      method: 'GET',
+    });
+  },
 };
 
 
@@ -709,6 +739,157 @@ export interface InterviewSession {
   ws_url: string;
   calibration?: SessionCalibration | null;
 }
+
+export interface AnalysisStatus {
+  session_id: number;
+  job_id: string | null;
+  status: 'not_started' | 'pending' | 'processing' | 'completed' | 'partial' | 'failed';
+  progress: number;
+  current_step: string;
+  is_partial: boolean;
+  missing_sections: string[];
+  error_message?: string | null;
+}
+
+export interface FactorExplanation {
+  factor: string;
+  earned_points: number;
+  max_points: number;
+  deduction: number;
+  metric_value: any;
+  reason: string;
+  category?: 'content' | 'speech' | 'face';
+  question_id?: number;
+}
+
+export interface QuestionScoreBreakdown {
+  question_id: number;
+  question_text: string;
+  topic: string;
+  composite_score: number;
+  face_posture: {
+    score: number;
+    sub_scores: Record<string, number>;
+    max_sub_scores: Record<string, number>;
+    explanations: FactorExplanation[];
+    deductions: FactorExplanation[];
+    raw_metrics: Record<string, any>;
+  };
+  speech_confidence: {
+    score: number;
+    sub_scores: Record<string, number>;
+    max_sub_scores: Record<string, number>;
+    explanations: FactorExplanation[];
+    deductions: FactorExplanation[];
+    raw_metrics: Record<string, any>;
+  };
+  content: {
+    score: number;
+    is_behavioral?: boolean;
+    classification?: string;
+    sub_scores: Record<string, number>;
+    max_sub_scores: Record<string, number>;
+    explanations: FactorExplanation[];
+    deductions: FactorExplanation[];
+    raw_metrics: Record<string, any>;
+  };
+  all_deductions: FactorExplanation[];
+  all_explanations: FactorExplanation[];
+}
+
+export interface SessionScoresResponse {
+  session_id: number;
+  overall_scores: {
+    face_posture_score: number;
+    speech_confidence_score: number;
+    content_score: number;
+    composite_score: number;
+  };
+  classification: 'STRONG' | 'AVERAGE' | 'WEAK';
+  per_question_breakdown: QuestionScoreBreakdown[];
+  top_deductions: FactorExplanation[];
+  key_strengths: string[];
+  areas_for_improvement: string[];
+  total_questions: number;
+}
+
+export interface WeakAreaEvidence {
+  question_id: number;
+  question_text: string;
+  score: number;
+  key_deductions: string[];
+}
+
+export interface WeakAreaItem {
+  topic: string;
+  average_score: number;
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  is_repeated: boolean;
+  repetition_count: number;
+  rank_weight: number;
+  evidence: WeakAreaEvidence[];
+  recommendation: string;
+}
+
+export interface ComparisonData {
+  baseline: {
+    user_baseline_score: number;
+    delta: number;
+    is_first_session: boolean;
+    summary: string;
+    total_past_sessions: number;
+  };
+  trend: {
+    direction: 'improving' | 'declining' | 'stable' | 'baseline_established';
+    trend_delta: number;
+    timeline: Array<{
+      session_id: number;
+      score: number;
+      round_type: string;
+      created_at: string;
+    }>;
+    summary: string;
+  };
+  cohort: {
+    percentile: number;
+    cohort_mean: number;
+    cohort_size: number;
+    is_seeded_benchmark: boolean;
+    benchmark_label: string;
+    delta_vs_cohort: number;
+  };
+}
+
+export interface SessionResultData {
+  id: number;
+  session_id: number;
+  user_id: number;
+  round_type: string;
+  role: string;
+  overall_score: number;
+  content_score: number;
+  speech_score: number;
+  face_score: number;
+  classification: 'STRONG' | 'AVERAGE' | 'WEAK';
+  weights_used: {
+    content: number;
+    speech: number;
+    face: number;
+  };
+  per_question_scores: any[];
+  comparisons: ComparisonData;
+  weak_areas: WeakAreaItem[];
+  strengths: string[];
+  user_memory?: {
+    user_id: number;
+    session_count: number;
+    topic_scores: Record<string, number>;
+    weak_topics: string[];
+    last_session_at?: string;
+  };
+  created_at: string;
+}
+
 
 
 

@@ -50,6 +50,7 @@ import {
   ConsentRecord,
   SessionCalibration,
   InterviewSession,
+  AnalysisStatus,
 } from './api';
 import { AuthProvider, useAuth } from './authContext';
 import './styles.css';
@@ -3987,36 +3988,155 @@ function Live({ go }: { go: (p: string) => void }) {
 
 
 function Processing({ go }: { go: (p: string) => void }) {
+  const pathParts = window.location.pathname.split('/');
+  const rawSessionId = pathParts[pathParts.length - 1];
+  const sessionId = parseInt(rawSessionId, 10) || 1;
+
+  const [statusData, setStatusData] = useState<AnalysisStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+
+  const pollStatus = async () => {
+    try {
+      const data = await api.getAnalysisStatus(sessionId);
+      setStatusData(data);
+      if (data.status === 'not_started') {
+        // Enqueue if not yet triggered
+        await api.finalizeSession(sessionId);
+      } else if (data.status === 'completed' || data.status === 'partial') {
+        toast.success(
+          data.status === 'partial'
+            ? 'Analysis completed with partial signals. Loading report...'
+            : 'Analysis completed successfully! Loading report...'
+        );
+        setTimeout(() => go(`/report/${sessionId}`), 1200);
+      } else if (data.status === 'failed') {
+        setError(data.error_message || 'Analysis pipeline encountered an error.');
+      }
+    } catch (err: any) {
+      console.warn('Analysis status poll error:', err);
+    }
+  };
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    setError(null);
+    try {
+      await api.finalizeSession(sessionId);
+      await pollStatus();
+    } catch (e: any) {
+      setError(e.message || 'Retry failed');
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   useEffect(() => {
-    const t = setTimeout(() => go('/report/1'), 1800);
-    return () => clearTimeout(t);
-  }, []);
+    pollStatus();
+    const interval = setInterval(() => {
+      if (statusData?.status !== 'completed' && statusData?.status !== 'failed') {
+        pollStatus();
+      }
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [sessionId, statusData?.status]);
+
+  const progress = statusData?.progress ?? 15;
+  const currentStep = statusData?.current_step || 'Initializing analysis pipeline...';
+
+  const steps = [
+    { label: 'Finalizing & merging session recordings', done: progress >= 25 },
+    { label: 'Aligning transcript & word timings', done: progress >= 50 },
+    { label: 'Synthesizing face & speech signals', done: progress >= 75 },
+    { label: 'Correlating integrity events & rubric evaluations', done: progress >= 90 },
+    { label: 'Compiling per-question aligned dataset', done: progress >= 100 },
+  ];
+
   return (
     <Shell go={go}>
-      <main className="processing">
-        <div className="orb small">
+      <main className="processing" style={{ maxWidth: 640, margin: '0 auto', textAlign: 'center', padding: '40px 20px' }}>
+        <div className="orb small" style={{ margin: '0 auto 20px' }}>
           <div className="orb-face">
             <span />
             <span />
             <b />
           </div>
         </div>
-        <span className="eyebrow">SESSION COMPLETE</span>
-        <h1>
+        <span className="eyebrow" style={{ color: '#00f2fe', letterSpacing: 1.5, fontSize: 12, fontWeight: 700 }}>
+          ANALYSIS IN PROGRESS · SESSION #{sessionId}
+        </span>
+        <h1 style={{ margin: '16px 0 8px', fontSize: 28 }}>
           Making sense<br />
           <em>of your signal.</em>
         </h1>
-        <div className="process-list">
-          {['Transcribing your answers', 'Analysing speech patterns', 'Scoring your responses', 'Writing your report'].map((x, i) => (
-            <div key={x}>
-              <span>✓</span>
-              {x}
-              <small>{i < 2 ? 'COMPLETE' : 'IN PROGRESS'}</small>
+        <p style={{ color: '#9aa3b2', marginBottom: 24, fontSize: 14 }}>
+          {currentStep} ({progress}%)
+        </p>
+
+        {/* Progress Bar */}
+        <div style={{ width: '100%', height: 8, background: 'rgba(255,255,255,0.08)', borderRadius: 4, overflow: 'hidden', marginBottom: 30 }}>
+          <div
+            style={{
+              width: `${progress}%`,
+              height: '100%',
+              background: 'linear-gradient(90deg, #00f2fe, #4facfe)',
+              transition: 'width 0.4s ease',
+            }}
+          />
+        </div>
+
+        {/* Partial notice if applicable */}
+        {statusData?.is_partial && (
+          <div style={{ background: 'rgba(234, 179, 8, 0.1)', border: '1px solid rgba(234, 179, 8, 0.3)', color: '#facc15', padding: '10px 14px', borderRadius: 8, marginBottom: 20, fontSize: 13, textAlign: 'left' }}>
+            Notice: Some telemetry signals were partial or missing ({statusData.missing_sections?.join(', ')}). Report will highlight complete sections.
+          </div>
+        )}
+
+        {/* Error message and Retry */}
+        {error && (
+          <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', color: '#f87171', padding: '12px 16px', borderRadius: 8, marginBottom: 20, textAlign: 'left' }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Pipeline Error:</div>
+            <div style={{ fontSize: 13, marginBottom: 10 }}>{error}</div>
+            <button
+              onClick={handleRetry}
+              disabled={retrying}
+              style={{ padding: '6px 14px', background: '#ef4444', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}
+            >
+              {retrying ? 'Retrying...' : 'Retry Analysis'}
+            </button>
+          </div>
+        )}
+
+        {/* Process Checklist */}
+        <div className="process-list" style={{ textAlign: 'left', marginBottom: 30 }}>
+          {steps.map((s, i) => (
+            <div
+              key={i}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '10px 14px',
+                marginBottom: 8,
+                background: s.done ? 'rgba(79, 172, 254, 0.08)' : 'rgba(255, 255, 255, 0.03)',
+                borderRadius: 8,
+                border: s.done ? '1px solid rgba(79, 172, 254, 0.25)' : '1px solid rgba(255, 255, 255, 0.05)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ color: s.done ? '#00f2fe' : '#64748b' }}>{s.done ? '✓' : '○'}</span>
+                <span style={{ color: s.done ? '#f1f5f9' : '#94a3b8', fontSize: 13 }}>{s.label}</span>
+              </div>
+              <small style={{ color: s.done ? '#00f2fe' : '#64748b', fontSize: 11, fontWeight: 600 }}>
+                {s.done ? 'COMPLETE' : progress > (i * 20) ? 'IN PROGRESS' : 'QUEUED'}
+              </small>
             </div>
           ))}
         </div>
+
         <button className="secondary" onClick={() => go('/dashboard')}>
-          Cancel and return
+          Cancel and return to dashboard
         </button>
       </main>
     </Shell>

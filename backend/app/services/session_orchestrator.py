@@ -249,6 +249,8 @@ class SessionOrchestrator:
         await self.emit("round_end", {
             "summary": summary,
             "next_state": "ENDED",
+            "session_id": self.session_id,
+            "next_url": f"/interview/processing/{self.session_id}",
             "timestamp": time.time(),
         })
 
@@ -671,16 +673,12 @@ class SessionOrchestrator:
             # -----------------------------------------------------------------
             elif curr_state == SessionState.ENDED:
                 self._persist()
-                # Update DB session record
-                db = SessionLocal()
-                try:
-                    s_rec = db.query(InterviewSession).filter(InterviewSession.id == self.session_id).first()
-                    if s_rec:
-                        s_rec.status = "completed"
-                        s_rec.ended_at = datetime.now(timezone.utc)
-                        db.commit()
-                finally:
-                    db.close()
+                # Finalize recordings, update session status to CLOSED, and store file keys
+                from app.services.analysis_pipeline import default_analysis_manager
+                rec_meta = default_analysis_manager.close_and_finalize_session(self.session_id)
+                # Enqueue analysis job to the pipeline
+                analysis_job = default_analysis_manager.enqueue_analysis_job(self.session_id)
+                logger.info("Session #%d ended: analysis job enqueued (%s)", self.session_id, analysis_job.get("job_id"))
 
                 # Clean close
                 if self.ws:

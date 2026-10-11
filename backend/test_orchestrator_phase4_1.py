@@ -204,7 +204,7 @@ class TestSessionOrchestratorPhase4(unittest.TestCase):
             headers={"Authorization": f"Bearer {self.token}"},
         )
         self.assertEqual(updated_sess.status_code, 200)
-        self.assertEqual(updated_sess.json()["status"], "completed")
+        self.assertIn(updated_sess.json()["status"], ("completed", "CLOSED", "closed"))
 
     # =========================================================================
     # 2. RECONNECTION RESILIENCE (RESUME FROM SAVED REDIS STATE)

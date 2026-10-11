@@ -332,6 +332,38 @@ To seed simulated returning-candidate history:
 
 ---
 
+### Phase 5.1: Session Close & Analysis Pipeline Start (100% Complete & Verified)
+- **Session Close & Recording Finalization**:
+  - `AnswerStorageManager.finalize_session_recordings(session_id)`: Merges audio chunks across all interview questions into a single `audio_merged.bin`, and compiles all video frames into an indexed `video_manifest.json`.
+  - Storage keys saved to `InterviewSession`: `audio_file_key`, `video_file_key`, `aligned_data_key`.
+  - Session status transitions to `CLOSED` upon round end in orchestrator (`SessionState.ENDED`) or via manual close endpoints.
+- **Asynchronous Analysis Job Manager (`SessionAnalysisJob`)**:
+  - Idempotent execution using `session_analysis:{session_id}` key in Redis / database.
+  - Exponential backoff retry mechanism (configurable `max_retries=3`, `retry_count`, `error_message`).
+  - Job status tracking (`pending` -> `processing` -> `completed` / `partial` / `failed`) with granular step progress (`15%` Finalizing recordings -> `45%` Merging audio/video -> `85%` Aligning multi-modal signals -> `100%` Dataset aligned).
+- **Multi-Modal Alignment Engine (`AlignmentEngine`)**:
+  - Unifies disparate data streams into a single per-question structured record:
+    - Transcript with word-level timestamps (`faster-whisper` / streaming STT).
+    - Face signals (gaze, head pose yaw/pitch/roll, eye contact relative to baseline, emotion, fidgeting).
+    - Speech signals (WPM, filler word count/rate, pitch mean/variance, volume RMS, pause length/count).
+    - Integrity events (tab switches, multi-face, missing face, fullscreen exits).
+    - Evaluator scores (relevance, correctness, depth, keywords, STAR, classification).
+- **Graceful Partial Failure Isolation**:
+  - If a specific analysis sub-component fails (e.g. video frames corrupt, speech metrics missing), the pipeline marks `is_partial = True`, sets job status to `"partial"`, records the failed sections in `missing_sections`, and preserves the remaining valid data so report generation can still proceed.
+- **UI Screen & Endpoints**:
+  - REST Endpoints:
+    - `POST /session/{id}/finalize` and `POST /session/{id}/close`
+    - `GET /session/{id}/analysis-status`
+    - `GET /session/{id}/aligned-data`
+  - Frontend "Analysis in progress" screen (`Processing` component in `Interv_AI/src/main.tsx`):
+    - Polls `GET /session/{id}/analysis-status`.
+    - Dynamic progress bar (0-100%) and step-by-step checklist.
+    - Notice badge when analysis completed with partial signals.
+    - Automatic transition to report view or error retry button.
+- **Verification**: `test_analysis_pipeline_phase5_1.py` (6/6 tests passed; 77/77 full regression tests passed).
+
+---
+
 ## 7. Project Phase Status Summary
 - **Phase 1**: Authentication, Profile Onboarding, CV Extraction, Structuring, Canonical DB (Complete & Verified)
 - **Phase 2**: Setup & Memory, Blueprint Builder, Question Pool & Deduplicated Bank (Complete & Verified)
@@ -343,7 +375,57 @@ To seed simulated returning-candidate history:
   - **4.4**: Answer Evaluator (Rubric, Code Keyword Coverage, STAR) & Dynamic Router
   - **4.5**: Parallel Signal Workers (Video & Audio), Time-Series Telemetry Store & Baseline Comparison
   - **4.6**: Integrity Monitor (Frontend Events, Video Multi-Face/Missing Face, Warning, Threshold Flagging)
-- **Phase 5**: Post-interview comprehensive evaluation report, analytics, feedback generation.
+  - **5.1**: Session Close & Analysis Pipeline Start (Idempotent Job Queue, Multi-Modal Alignment, Partial Failure Resilience, Progress UI) (100% Complete & Verified)
+  - **5.2**: Three Scoring Modules (Face & Posture, Speech Confidence, Content Rubric), Configurable Engine & Explanation Generator (100% Complete & Verified)
+  - **5.3**: Score Fusion, Comparisons, Weak-Area Ranking & U Memory Updates (100% Complete & Verified)
+
+### Phase 5.3: Score Fusion, Comparisons, Weak-Area Ranking & Memory Updates (100% Complete & Verified)
+- **Round-Type Score Fusion (`score_fusion_service.py`)**:
+  - Dynamically weights modules based on interview round type:
+    - Technical: Content-heavy (`content: 0.60`, `speech: 0.25`, `face: 0.15`).
+    - HR / Behavioral: Communication-heavy (`content: 0.35`, `speech: 0.35`, `face: 0.30`).
+    - Managerial / Leadership: (`content: 0.45`, `speech: 0.35`, `face: 0.20`).
+    - System Design: (`content: 0.55`, `speech: 0.30`, `face: 0.15`).
+  - Stored `weights_used` attached directly to result records.
+- **Comparison Engine (Baseline, Trend & Cohort Percentile)**:
+  - Personal Baseline: Compares overall score against past session average ($\Delta$ points), or reference baseline for first session.
+  - Session Trend: Chronological score trajectory (`improving`, `declining`, `stable`) with slope and timeline.
+  - Cohort Percentile: Ranks candidate against peers in the same round type and role. Uses calibrated industry standard benchmark when cohort $N < 5$ and clearly labels it (`Industry Standard Benchmark (Seeded Benchmark)`).
+- **Weak-Area Ranking Engine with Evidence**:
+  - Ranks topics and skills based on lowest scores, repeated weakness from `UserMemory.weak_topics`, and integrity or confidence deductions.
+  - Generates top 3–5 weak areas, each citing severity (`HIGH`, `MEDIUM`, `LOW`), question IDs, scores, and exact deduction quotes (`evidence`), along with actionable recommendations.
+- **Persistence & "U Memory Update"**:
+  - Persists full payload to `SessionResult` table.
+  - Updates `UserMemory`: rolling topic averages in `topic_scores`, updates `weak_topics`, increments `session_count`, updates `last_session_at`.
+  - Updates `AskedQuestion`: records SHA-256 question hash, topic, question text, and score.
+- **REST Endpoints & Frontend SDK**:
+  - `GET /session/{id}/result` returns complete consolidated `SessionResult` object.
+  - `api.getSessionResult` and TypeScript interfaces (`SessionResultData`, `ComparisonData`, `WeakAreaItem`, `WeakAreaEvidence`) added to `Interv_AI/src/api.ts`.
+- **Verification**: `test_score_fusion_phase5_3.py` (6/6 tests passed; 93/93 full regression tests passed).
+
+### Phase 5.2: Three Pure Function Scoring Modules & Configurable Scoring Engine (100% Complete & Verified)
+- **Centralized Scoring Configuration (`scoring_config.py`)**:
+  - `FacePostureConfig`: eye contact weight (0.30), expression stability (0.15), head-pose stability (0.25), posture (0.20), fidgeting (0.10); target baseline ratio (0.85), yaw/pitch/roll deviation bounds (20°/18°/15°), posture target (0.85), fidgeting tolerance (0.06).
+  - `SpeechConfidenceConfig`: speech pace (0.25), filler rate (0.25), pauses (0.15), pitch (0.10), volume (0.10), clarity (0.15); ideal pace 120-160 WPM, target filler rate <= 2.0%, pause thresholds 0.4s-2.2s.
+  - `ContentRubricConfig`: technical rubric (accuracy 0.35, depth 0.25, keywords 0.25, examples 0.15) & behavioral rubric (accuracy 0.20, depth 0.20, keywords 0.15, STAR 0.30, examples 0.15); example markers and metrics detector.
+  - `SessionScoringWeights`: content (0.50), speech (0.30), face (0.20).
+- **Three Pure Function Scoring Modules (`scoring_engine.py`)**:
+  - 1. `compute_face_and_posture_score`: normalized 0-100 score evaluating eye contact vs calibration baseline, facial composure, head-pose alignment, posture, and fidgeting penalty.
+  - 2. `compute_speech_confidence_score`: normalized 0-100 score evaluating pace within 120-160 WPM, filler word rate (um, uh, like), pause patterns, pitch/volume variability, and audio clarity proxy.
+  - 3. `compute_content_score`: normalized 0-100 score evaluating technical accuracy, depth, keyword coverage, STAR completeness (Situation, Task, Action, Result) for behavioral answers, and use of concrete production examples/metrics.
+- **Detailed Explanation & Deduction Engine**:
+  - Returns a per-question breakdown and an explanation list (`deductions` and `explanations`) citing exact factor, points lost, observed metric value, and actionable human reason (e.g. `[Speech Pace: -8.5 pts] Speaking pace of 95 WPM was below the ideal 120-160 WPM range`).
+- **Session Aggregator & Classification**:
+  - Aggregates questions into overall session composite score, assigns classification (`STRONG` >= 80, `AVERAGE` >= 60, `WEAK` < 60), identifies top strengths, and lists ordered areas for improvement.
+- **REST Endpoint & Client SDK**:
+  - `GET /session/{id}/scores` returns the full scoring report with per-question breakdowns and explanations.
+  - `api.getSessionScores(sessionId)` added in `Interv_AI/src/api.ts` with TypeScript interfaces (`SessionScoresResponse`, `QuestionScoreBreakdown`, `FactorExplanation`).
+- **Verification**: `test_scoring_modules_phase5_2.py` (10/10 tests passed; 87/87 full regression tests passed):
+  - Strong session: 91.5 composite (`STRONG`), minimal deductions.
+  - Average session: 69.8 composite (`AVERAGE`), moderate deductions explained.
+  - Weak session: 34.2 composite (`WEAK`), substantial deductions explained.
+  - Distinct score separation: `strong > average > weak` by > 15-20 points across all dimensions.
+
 
 
 

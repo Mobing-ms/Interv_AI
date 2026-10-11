@@ -532,6 +532,82 @@ class AnswerStorageManager:
             "transcript": transcript_content,
         }
 
+    def finalize_session_recordings(self, session_id: int) -> Dict[str, Any]:
+        """
+        Finalizes recordings across all questions for the session:
+        - Merges audio chunks into a consolidated session audio file.
+        - Compiles a video manifest / frame registry for object storage.
+        - Generates persistent storage file keys.
+        """
+        sess_dir = os.path.join(self.base_dir, str(session_id))
+        os.makedirs(sess_dir, exist_ok=True)
+
+        merged_audio_path = os.path.join(sess_dir, "audio_merged.bin")
+        video_manifest_path = os.path.join(sess_dir, "video_manifest.json")
+
+        total_audio_bytes = 0
+        all_frames: List[Dict[str, Any]] = []
+
+        # 1. Merge audio across questions
+        with open(merged_audio_path, "wb") as master_audio:
+            if os.path.exists(sess_dir):
+                # Iterate over question subdirectories (named numerically)
+                subdirs = sorted([d for d in os.listdir(sess_dir) if d.isdigit()], key=lambda x: int(x))
+                for q_str in subdirs:
+                    q_dir = os.path.join(sess_dir, q_str)
+                    # Check audio_stream.bin or audio_chunks/
+                    q_stream = os.path.join(q_dir, "audio_stream.bin")
+                    if os.path.exists(q_stream):
+                        with open(q_stream, "rb") as qf:
+                            chunk_data = qf.read()
+                            master_audio.write(chunk_data)
+                            total_audio_bytes += len(chunk_data)
+                    else:
+                        chunks_dir = os.path.join(q_dir, "audio_chunks")
+                        if os.path.exists(chunks_dir):
+                            chunk_files = sorted(os.listdir(chunks_dir))
+                            for cf in chunk_files:
+                                cp = os.path.join(chunks_dir, cf)
+                                with open(cp, "rb") as f:
+                                    cd = f.read()
+                                    master_audio.write(cd)
+                                    total_audio_bytes += len(cd)
+
+                    # Collect video frames
+                    frames_dir = os.path.join(q_dir, "frames")
+                    if os.path.exists(frames_dir):
+                        for ff in sorted(os.listdir(frames_dir)):
+                            fp = os.path.join(frames_dir, ff)
+                            all_frames.append({
+                                "question_id": int(q_str),
+                                "filename": ff,
+                                "path": fp,
+                                "size_bytes": os.path.getsize(fp) if os.path.exists(fp) else 0,
+                            })
+
+        # 2. Write video manifest
+        with open(video_manifest_path, "w", encoding="utf-8") as vf:
+            json.dump({
+                "session_id": session_id,
+                "total_frames": len(all_frames),
+                "frames": all_frames,
+                "finalized_at": time.time(),
+            }, vf, indent=2)
+
+        audio_file_key = f"sessions/{session_id}/audio_merged.bin"
+        video_file_key = f"sessions/{session_id}/video_manifest.json"
+
+        return {
+            "session_id": session_id,
+            "audio_file_key": audio_file_key,
+            "video_file_key": video_file_key,
+            "audio_merged_path": merged_audio_path,
+            "video_manifest_path": video_manifest_path,
+            "total_audio_bytes": total_audio_bytes,
+            "total_video_frames": len(all_frames),
+            "finalized_at": time.time(),
+        }
+
 
 # Singletons
 default_vad_detector = VADDetector()

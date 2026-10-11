@@ -25,6 +25,7 @@ class User(Base):
     asked_questions = relationship("AskedQuestion", back_populates="user", cascade="all, delete-orphan", order_by="desc(AskedQuestion.asked_at)")
     consents = relationship("UserConsent", back_populates="user", cascade="all, delete-orphan", order_by="desc(UserConsent.accepted_at)")
     sessions = relationship("InterviewSession", back_populates="user", cascade="all, delete-orphan", order_by="desc(InterviewSession.created_at)")
+    session_results = relationship("SessionResult", back_populates="user", cascade="all, delete-orphan", order_by="desc(SessionResult.created_at)")
 
 
 class EmailOTP(Base):
@@ -197,8 +198,11 @@ class InterviewSession(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     interview_id = Column(Integer, ForeignKey("interview_configs.id", ondelete="CASCADE"), nullable=False, index=True)
-    status = Column(String(50), default="created", nullable=False)  # created, active, completed, aborted
+    status = Column(String(50), default="created", nullable=False)  # created, active, completed, aborted, CLOSED
     session_token = Column(String(255), unique=True, index=True, nullable=False)
+    audio_file_key = Column(String(500), nullable=True)
+    video_file_key = Column(String(500), nullable=True)
+    aligned_data_key = Column(String(500), nullable=True)
     started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     ended_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
@@ -208,6 +212,8 @@ class InterviewSession(Base):
     calibration = relationship("SessionCalibration", back_populates="session", uselist=False, cascade="all, delete-orphan")
     signals = relationship("SignalTimeSeries", back_populates="session", cascade="all, delete-orphan")
     integrity_events = relationship("IntegrityEvent", back_populates="session", cascade="all, delete-orphan")
+    analysis_job = relationship("SessionAnalysisJob", back_populates="session", uselist=False, cascade="all, delete-orphan")
+    result = relationship("SessionResult", back_populates="session", uselist=False, cascade="all, delete-orphan")
 
 
 class SessionCalibration(Base):
@@ -260,6 +266,53 @@ class IntegrityEvent(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
     session = relationship("InterviewSession", back_populates="integrity_events")
+
+
+class SessionAnalysisJob(Base):
+    __tablename__ = "session_analysis_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("interview_sessions.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    job_id = Column(String(100), unique=True, nullable=False, index=True)
+    status = Column(String(50), default="pending", nullable=False)  # pending, processing, completed, partial, failed
+    progress = Column(Integer, default=0, nullable=False)
+    current_step = Column(String(100), default="queued", nullable=False)
+    is_partial = Column(Boolean, default=False, nullable=False)
+    missing_sections = Column(JSON, default=list, nullable=False)
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0, nullable=False)
+    max_retries = Column(Integer, default=3, nullable=False)
+    aligned_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    session = relationship("InterviewSession", back_populates="analysis_job")
+
+
+class SessionResult(Base):
+    __tablename__ = "session_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("interview_sessions.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    round_type = Column(String(50), nullable=False)
+    role = Column(String(150), nullable=True)
+    overall_score = Column(Float, nullable=False)
+    content_score = Column(Float, nullable=False)
+    speech_score = Column(Float, nullable=False)
+    face_score = Column(Float, nullable=False)
+    classification = Column(String(50), nullable=False)  # STRONG, AVERAGE, WEAK
+    weights_used = Column(JSON, nullable=False)
+    per_question_scores = Column(JSON, nullable=False)
+    comparisons = Column(JSON, nullable=False)
+    weak_areas = Column(JSON, nullable=False)
+    strengths = Column(JSON, default=list, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    session = relationship("InterviewSession", back_populates="result")
+    user = relationship("User", back_populates="session_results")
+
 
 
 

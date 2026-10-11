@@ -831,4 +831,169 @@ def get_session_integrity_convenience(
     return get_session_integrity_events(id=id, current_user=current_user, db=db)
 
 
+# =============================================================================
+# PHASE 5.1: SESSION CLOSE & ANALYSIS PIPELINE ENDPOINTS
+# =============================================================================
+
+@router.post("/{id}/finalize")
+def finalize_and_analyze_session(
+    id: int,
+    sync: bool = Query(False, description="Run synchronously (useful for test suites)"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Finalizes recordings, updates Session status to CLOSED, stores file keys,
+    and pushes an idempotent analysis job to the queue.
+    """
+    session = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Interview session #{id} not found.",
+        )
+
+    from app.services.analysis_pipeline import default_analysis_manager
+    job_info = default_analysis_manager.enqueue_analysis_job(session_id=id, sync=sync)
+    return {
+        "session_id": id,
+        "message": "Session recordings finalized and analysis job enqueued.",
+        "status": session.status,
+        "job": job_info,
+    }
+
+
+@router.post("/{id}/close")
+def close_session_alias(
+    id: int,
+    sync: bool = Query(False),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Alias for /finalize."""
+    return finalize_and_analyze_session(id=id, sync=sync, current_user=current_user, db=db)
+
+
+@router.get("/{id}/analysis-status")
+def get_session_analysis_status(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Polls real-time status of the analysis pipeline for the session:
+    pending, processing, completed, partial, or failed, along with step progress.
+    """
+    session = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Interview session #{id} not found.",
+        )
+
+    from app.services.analysis_pipeline import default_analysis_manager
+    status_data = default_analysis_manager.get_job_status(session_id=id)
+    return status_data
+
+
+@router.get("/{id}/aligned-data")
+def get_session_aligned_data(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the complete per-question aligned dataset for the session:
+    transcript, word timings, face signals, speech signals, integrity events, evaluator scores.
+    """
+    session = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Interview session #{id} not found.",
+        )
+
+    from app.services.analysis_pipeline import default_alignment_engine
+    aligned = default_alignment_engine.align_session(session_id=id)
+    return aligned
+
+
+@router.get("/{id}/scores")
+def get_session_scores(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the normalized scoring breakdown (0-100) for the interview session:
+    - Face & Posture Score
+    - Speech Confidence Score
+    - Content Rubric Score
+    - Composite Overall Score & Classification
+    - Per-question factor breakdown and explanation list citing exact deductions.
+    """
+    session = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Interview session #{id} not found.",
+        )
+
+    from app.services.analysis_pipeline import default_alignment_engine
+    from app.services.scoring_engine import compute_session_scores
+
+    aligned = default_alignment_engine.align_session(session_id=id)
+    scores = aligned.get("scores")
+    if not scores:
+        scores = compute_session_scores(aligned)
+
+    return scores
+
+
+@router.get("/{id}/result")
+def get_session_result(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the complete consolidated session result object (Phase 5.3):
+    - Fused scores (round-type weighted combination of content, speech, face)
+    - Comparison data (user baseline delta, session trend, cohort percentile rank)
+    - Ranked weak areas with question IDs, scores, and exact deduction evidence
+    - Verified UserMemory and AskedQuestion updates.
+    """
+    session = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Interview session #{id} not found.",
+        )
+
+    from app.services.score_fusion_service import process_and_persist_session_result
+    result_data = process_and_persist_session_result(session_id=id, db=db)
+    return result_data
+
+
+
 
