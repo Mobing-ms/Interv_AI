@@ -77,6 +77,13 @@ def cleanup_all_expired_recordings(
                     e,
                 )
 
+        # Prune cloud object storage assets
+        try:
+            from app.services.storage_service import default_storage_provider
+            default_storage_provider.delete_prefix(f"sessions/{sess.id}")
+        except Exception as e:
+            logger.warning(f"Error deleting cloud objects for session #{sess.id}: {e}")
+
         # Clear file keys in database to reflect that media has expired
         sess.audio_file_key = None
         sess.video_file_key = None

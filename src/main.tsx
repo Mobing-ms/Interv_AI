@@ -3618,7 +3618,11 @@ function Precheck({ go }: { go: (p: string) => void }) {
 
   const connectWebSocketStream = async (sess: InterviewSession) => {
     try {
-      const ws = new WebSocket(sess.ws_url);
+      let targetWsUrl = sess.ws_url;
+      if (window.location.protocol === 'https:' && targetWsUrl.startsWith('ws://')) {
+        targetWsUrl = targetWsUrl.replace('ws://', 'wss://');
+      }
+      const ws = new WebSocket(targetWsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -4428,8 +4432,19 @@ function Live({ go }: { go: (p: string) => void }) {
   // Connect to live WebSocket stream
   useEffect(() => {
     const token = localStorage.getItem('intervai_access_token') || localStorage.getItem('access_token') || '';
-    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsHost = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
+    let wsHost = 'localhost:8000';
+    let wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (API_BASE_URL.startsWith('http')) {
+      try {
+        const parsed = new URL(API_BASE_URL);
+        wsHost = parsed.host;
+        wsProto = parsed.protocol === 'https:' || window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      } catch {
+        wsHost = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
+      }
+    } else {
+      wsHost = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
+    }
     const wsUrl = `${wsProto}//${wsHost}/session/${sessionId}/live?token=${token}`;
 
     let isCleaningUp = false;

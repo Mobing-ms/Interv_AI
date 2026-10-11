@@ -193,9 +193,11 @@ def synthesize_tts(payload: Dict[str, Any]):
 def _build_ws_url(request: Request, session_id: int, token: str) -> str:
     """
     Constructs the WebSocket URL based on request scheme and host.
+    Ensures wss:// is used when running over HTTPS or behind TLS reverse proxies.
     """
-    host = request.headers.get("host", "127.0.0.1:8000")
-    scheme = "wss" if request.url.scheme == "https" else "ws"
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    scheme = "wss" if proto == "https" else "ws"
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host", "127.0.0.1:8000")
     return f"{scheme}://{host}/session/{session_id}/stream?token={token}"
 
 
@@ -1244,16 +1246,26 @@ def get_session_recording_urls(
     """
     session = _resolve_session(id, auth_ctx, db)
 
-    from app.services.signed_url_service import generate_signed_recording_url
-    base = f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:8000')}"
-    audio_signed = generate_signed_recording_url(id, file_type="audio", expires_in_seconds=3600, base_url=base)
-    video_signed = generate_signed_recording_url(id, file_type="video", expires_in_seconds=3600, base_url=base)
+    from app.services.storage_service import default_storage_provider, S3StorageProvider
+    base = settings.PUBLIC_API_URL or f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:8000')}"
+
+    if isinstance(default_storage_provider, S3StorageProvider):
+        audio_url = default_storage_provider.get_signed_url(f"sessions/{id}/audio_merged.bin", expires_in_seconds=3600, content_type="audio/webm")
+        video_url = default_storage_provider.get_signed_url(f"sessions/{id}/video_manifest.json", expires_in_seconds=3600, content_type="application/json")
+        expires_at = int(time.time()) + 3600
+    else:
+        from app.services.signed_url_service import generate_signed_recording_url
+        audio_signed = generate_signed_recording_url(id, file_type="audio", expires_in_seconds=3600, base_url=base)
+        video_signed = generate_signed_recording_url(id, file_type="video", expires_in_seconds=3600, base_url=base)
+        audio_url = audio_signed["url"]
+        video_url = video_signed["url"]
+        expires_at = audio_signed["expires_at"]
 
     return {
         "session_id": id,
-        "audio_url": audio_signed["url"],
-        "video_manifest_url": video_signed["url"],
-        "expires_at": audio_signed["expires_at"],
+        "audio_url": audio_url,
+        "video_manifest_url": video_url,
+        "expires_at": expires_at,
         "retention_days": 1 if session.is_guest else settings.RECORDING_RETENTION_DAYS,
     }
 

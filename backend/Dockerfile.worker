@@ -1,0 +1,23 @@
+# Dockerfile for IntervAI Celery / Background Analysis Worker
+FROM python:3.11-slim as worker
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Install system dependencies (ffmpeg for audio signal processing, gcc, libpq-dev)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Run Celery worker for the analysis pipeline
+CMD ["celery", "-A", "app.services.analysis_pipeline", "worker", "--loglevel=info", "--concurrency=2"]

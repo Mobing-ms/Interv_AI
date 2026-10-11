@@ -1,0 +1,111 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: intervai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: intervai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d intervai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: intervai-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: intervai-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      ENV: development
+      DEBUG: "true"
+      DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/intervai
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: local
+      JWT_SECRET_KEY: intervai-local-development-secret-key-32chars-min
+      DEV_MODE: "true"
+      CORS_ORIGINS: http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174
+      STT_PROVIDER: mock
+      LLM_PROVIDER: mock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - backend_storage:/app/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    container_name: intervai-worker
+    restart: unless-stopped
+    environment:
+      ENV: development
+      DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/intervai
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: local
+      JWT_SECRET_KEY: intervai-local-development-secret-key-32chars-min
+      STT_PROVIDER: mock
+      LLM_PROVIDER: mock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+      - backend_storage:/app/storage
+
+  frontend:
+    build:
+      context: ./Interv_AI
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8000
+    container_name: intervai-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_storage:

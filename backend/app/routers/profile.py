@@ -321,6 +321,13 @@ def delete_my_personal_data(
         if os.path.exists(sess_dir):
             shutil.rmtree(sess_dir, ignore_errors=True)
 
+        # Delete cloud object storage assets
+        try:
+            from app.services.storage_service import default_storage_provider
+            default_storage_provider.delete_prefix(f"sessions/{sid}")
+        except Exception as e:
+            logger.warning(f"Error purging cloud objects for session #{sid}: {e}")
+
         # Delete dependent session rows
         db.query(SessionReport).filter(SessionReport.session_id == sid).delete()
         db.query(SessionResult).filter(SessionResult.session_id == sid).delete()
