@@ -23,6 +23,8 @@ class User(Base):
     interview_configs = relationship("InterviewConfig", back_populates="user", cascade="all, delete-orphan", order_by="desc(InterviewConfig.created_at)")
     memory = relationship("UserMemory", back_populates="user", uselist=False, cascade="all, delete-orphan")
     asked_questions = relationship("AskedQuestion", back_populates="user", cascade="all, delete-orphan", order_by="desc(AskedQuestion.asked_at)")
+    consents = relationship("UserConsent", back_populates="user", cascade="all, delete-orphan", order_by="desc(UserConsent.accepted_at)")
+    sessions = relationship("InterviewSession", back_populates="user", cascade="all, delete-orphan", order_by="desc(InterviewSession.created_at)")
 
 
 class EmailOTP(Base):
@@ -119,6 +121,7 @@ class InterviewConfig(Base):
 
     user = relationship("User", back_populates="interview_configs")
     questions = relationship("QuestionBankItem", back_populates="interview_config", cascade="all, delete-orphan", order_by="desc(QuestionBankItem.rank_score)")
+    sessions = relationship("InterviewSession", back_populates="interview_config", cascade="all, delete-orphan", order_by="desc(InterviewSession.created_at)")
 
 
 class UserMemory(Base):
@@ -172,6 +175,54 @@ class QuestionBankItem(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
     interview_config = relationship("InterviewConfig", back_populates="questions")
+
+
+class UserConsent(Base):
+    __tablename__ = "user_consents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    version = Column(String(50), default="v1.0", nullable=False)
+    retention_days = Column(Integer, default=30, nullable=False)
+    accepted = Column(Boolean, default=True, nullable=False)
+    can_delete = Column(Boolean, default=True, nullable=False)
+    accepted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    user = relationship("User", back_populates="consents")
+
+
+class InterviewSession(Base):
+    __tablename__ = "interview_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    interview_id = Column(Integer, ForeignKey("interview_configs.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(50), default="created", nullable=False)  # created, active, completed, aborted
+    session_token = Column(String(255), unique=True, index=True, nullable=False)
+    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    ended_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    user = relationship("User", back_populates="sessions")
+    interview_config = relationship("InterviewConfig", back_populates="sessions")
+    calibration = relationship("SessionCalibration", back_populates="session", uselist=False, cascade="all, delete-orphan")
+
+
+class SessionCalibration(Base):
+    __tablename__ = "session_calibrations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("interview_sessions.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    face_baseline = Column(JSON, default=dict, nullable=False)   # {"neutral_score": float, "gaze_center": {"x": float, "y": float}, "head_pose": {"pitch": float, "yaw": float, "roll": float}}
+    voice_baseline = Column(JSON, default=dict, nullable=False)  # {"average_volume_db": float, "pitch_range_hz": [float, float]}
+    background_noise_level_db = Column(Float, default=-50.0, nullable=False)
+    calibration_text = Column(String(500), nullable=True)
+    calibrated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    session = relationship("InterviewSession", back_populates="calibration")
+    user = relationship("User")
+
 
 
 

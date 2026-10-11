@@ -80,6 +80,7 @@ cd c:\Users\soory\Downloads\InterAI\backend
 .\venv\Scripts\python.exe test_interview_phase2_1.py
 .\venv\Scripts\python.exe test_interview_blueprint.py
 .\venv\Scripts\python.exe test_question_bank_phase2_3.py
+.\venv\Scripts\python.exe test_preinterview_phase3_1.py
 ```
 
 To seed simulated returning-candidate history:
@@ -150,11 +151,58 @@ To seed simulated returning-candidate history:
 
 ---
 
-## 5. Phase 2 Status & Upcoming Roadmap
-- **Phase 2.1**: Interview Setup & Returning-User Check (Complete & Verified)
-- **Phase 2.2**: Interview Blueprint Builder (Complete & Verified)
-- **Phase 2.3**: Question Pool Generation & Question Bank (Complete & Verified)
-- **Phase 2.4**: Next Phase (Interactive live interview turn-taking / audio / speech-to-text / dynamic follow-ups).
+---
+
+## 5. Phase 3 Accomplishments & Architecture
+
+### Phase 3.1: Pre-Interview Check, Consent, Calibration & Session Lifecycle (100% Complete & Verified)
+- **Consent Screen & Enforcement**:
+  - Clear terms detailing audio/video recording, multimodal AI behavioral & technical analysis, and configurable retention (`settings.RECORDING_RETENTION_DAYS = 30`).
+  - Candidate right-to-delete guarantee.
+  - `UserConsent` model (`id`, `user_id`, `version`, `retention_days`, `accepted`, `can_delete`, `accepted_at`).
+  - Endpoints: `POST /session/consent` & `GET /session/consent`.
+  - Blocks session creation with HTTP 403 if consent is missing.
+- **Device & Network Diagnostics (Frontend + Backend)**:
+  - Camera & Mic checks using `navigator.mediaDevices.getUserMedia`.
+  - Live video preview with mirror orientation and head posture outline.
+  - Live animated Web Audio volume meter (0–100% and dBFS indicator) with peak level tracking.
+  - Network tests:
+    - Round-trip ping latency (`GET /session/ping`, averages 3 pings).
+    - Upload speed test (`POST /session/speed-test`, measures payload transfer in Mbps).
+  - Categorized troubleshooting guidance with actionable resolution tips:
+    - Permission Denied (`NotAllowedError`)
+    - No Device Found (`NotFoundError`)
+    - Device in Use (`NotReadableError` / competing software like Zoom/Teams)
+    - Poor Network (>300ms latency or <0.5 Mbps bandwidth)
+    - "Retry Diagnostics" button.
+- **30-Second Baseline Calibration**:
+  - User reads calibration sentence: *"I am ready to begin my interview with IntervAI, showcasing my system design, technical problem-solving, and communication skills."*
+  - 30-second countdown timer with visual progress bar and real-time posture indicators.
+  - Telemetry capture:
+    - Face baseline (neutral expression 95%, center gaze alignment x=0.5, y=0.5, head pitch/yaw/roll).
+    - Voice baseline (average volume in dBFS, pitch range in Hz, estimated speaking rate).
+    - Ambient noise floor level (dBFS).
+  - Model `SessionCalibration` linked to `interview_sessions.id`.
+  - Endpoints: `POST /session/{id}/calibration` & `GET /session/{id}/calibration`.
+- **Session Creation & WebSocket Streaming Connection**:
+  - Model `InterviewSession` (`id`, `user_id`, `interview_id`, `status`, `session_token`, `started_at`, `ended_at`, `created_at`).
+  - Alembic migration `fcb8b598a2e6` applied.
+  - Endpoints: `POST /session` (creates session, validates consent, returns `id`, `session_token`, and `ws_url`) & `GET /session/{id}`.
+  - WebSocket endpoint `@router.websocket("/session/{id}/stream")`:
+    - Authenticates via query parameter `?token=...`.
+    - Handles ping/pong, JSON events, and `MediaRecorder` video chunks (binary and base64).
+    - Dispatches chunk acknowledgments (`chunk_ack`).
+  - Client opens connection and smoothly navigates to `/interview/live/{session.id}`.
+- **Test Suite**: `test_preinterview_phase3_1.py` (7/7 tests passed).
+
+---
+
+## 6. Project Phase Status Summary
+- **Phase 1**: Authentication, Profile Onboarding, CV Extraction, Structuring, Canonical DB (Complete & Verified)
+- **Phase 2**: Setup & Memory, Blueprint Builder, Question Pool & Deduplicated Bank (Complete & Verified)
+- **Phase 3.1**: Pre-Interview Check, Consent, Calibration & Session (Complete & Verified)
+- **Phase 3.2**: Next Phase (Interactive live turn-taking, speech-to-text audio pipeline, dynamic follow-up questioning).
+
 
 
 

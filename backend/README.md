@@ -56,6 +56,17 @@ FastAPI backend for IntervAI, an AI mock-interview platform.
 - `GET /interview/{id}/questions`: Retrieves active questions and reserve follow-ups for the given interview session.
 - Models: `QuestionBankItem` (linked to `InterviewConfig` with foreign key and cascade deletion).
 
+### Phase 3.1: Pre-Interview Check, Consent, Calibration & Session Lifecycle
+- `POST /session/consent`: Records candidate recording, AI analysis, and 30-day retention consent.
+- `GET /session/consent`: Retrieves user's latest recorded consent.
+- `GET /session/ping`: Lightweight round-trip latency network diagnostic endpoint.
+- `POST /session/speed-test`: Measures upload bandwidth transfer rate in Mbps.
+- `POST /session`: Creates an `InterviewSession` with unique `session_token` and `ws_url`. Enforces that candidate consent is recorded (403 if missing).
+- `GET /session/{id}`: Retrieves session status and calibration.
+- `POST /session/{id}/calibration`: Records 30s baseline for face, voice level, and background noise floor.
+- `GET /session/{id}/calibration`: Retrieves baseline calibration metrics.
+- `WebSocket /session/{id}/stream`: Real-time streaming channel for MediaRecorder video chunks and ping/pong keepalives.
+
 ## How to Run
 
 1. Activate virtual environment:
@@ -85,6 +96,7 @@ python test_profile_phase1_5.py
 python test_interview_phase2_1.py
 python test_interview_blueprint.py
 python test_question_bank_phase2_3.py
+python test_preinterview_phase3_1.py
 ```
 To seed fake interview history for testing returning users:
 ```bash

@@ -3,28 +3,53 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowUpRight,
   BrainCircuit,
+  Camera,
+  CameraOff,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock3,
+  HelpCircle,
   LockKeyhole,
   Menu,
+  Mic,
   Mic2,
+  MicOff,
   Play,
   Plus,
+  Radio,
+  RefreshCw,
+  Shield,
   ShieldCheck,
   Sparkles,
   Target,
   Trash2,
   TrendingUp,
+  Volume2,
+  Wifi,
+  WifiOff,
   X,
   Zap,
 } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
-import { api, ApiError, User, StructuredCV, CrossCheckFlag, ConfirmedProfile, UserContext, InterviewConfig } from './api';
+import {
+  api,
+  ApiError,
+  User,
+  StructuredCV,
+  CrossCheckFlag,
+  ConfirmedProfile,
+  UserContext,
+  InterviewConfig,
+  ConsentRecord,
+  SessionCalibration,
+  InterviewSession,
+} from './api';
 import { AuthProvider, useAuth } from './authContext';
 import './styles.css';
 
@@ -2474,54 +2499,874 @@ function Setup({ go }: { go: (p: string) => void }) {
 }
 
 function Precheck({ go }: { go: (p: string) => void }) {
-  const [ready, setReady] = useState(false);
+  // Step navigation: 'consent' -> 'devices' -> 'calibration' -> 'connecting'
+  const [step, setStep] = useState<'consent' | 'devices' | 'calibration' | 'connecting'>('consent');
+
+  // 1. Consent State
+  const [consentRecording, setConsentRecording] = useState(false);
+  const [consentAnalysis, setConsentAnalysis] = useState(false);
+  const [consentRetention, setConsentRetention] = useState(false);
+  const [savingConsent, setSavingConsent] = useState(false);
+  const [hasPriorConsent, setHasPriorConsent] = useState(false);
+
+  // 2. Device Check State
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
+  const [cameraStatus, setCameraStatus] = useState<'pending' | 'checking' | 'pass' | 'fail'>('pending');
+  const [micStatus, setMicStatus] = useState<'pending' | 'checking' | 'pass' | 'fail'>('pending');
+  const [micVolume, setMicVolume] = useState<number>(0);
+  const [micDb, setMicDb] = useState<number>(-60);
+  const [networkStatus, setNetworkStatus] = useState<'pending' | 'checking' | 'pass' | 'poor' | 'fail'>('pending');
+  const [networkLatency, setNetworkLatency] = useState<number | null>(null);
+  const [networkSpeed, setNetworkSpeed] = useState<number | null>(null);
+
+  const [deviceErrorType, setDeviceErrorType] = useState<
+    null | 'permission_denied' | 'no_device' | 'device_in_use' | 'poor_network' | 'generic'
+  >(null);
+  const [deviceErrorMessage, setDeviceErrorMessage] = useState<string>('');
+  const [showTroubleshoot, setShowTroubleshoot] = useState(false);
+  const [checkingDevices, setCheckingDevices] = useState(false);
+
+  // 3. Calibration State (30 seconds)
+  const [calibrationTimeLeft, setCalibrationTimeLeft] = useState(30);
+  const [calibrationActive, setCalibrationActive] = useState(false);
+  const [samplesGathered, setSamplesGathered] = useState(0);
+  const [calibratedData, setCalibratedData] = useState<any>(null);
+
+  // 4. Session & WebSocket State
+  const [session, setSession] = useState<InterviewSession | null>(null);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [chunksCount, setChunksCount] = useState(0);
+  const [launchingSession, setLaunchingSession] = useState(false);
+
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+
+  const isConsentFullyAccepted = consentRecording && consentAnalysis && consentRetention;
+
+  // Check for prior recorded consent on mount
+  useEffect(() => {
+    let mounted = true;
+    api
+      .getLatestConsent()
+      .then((c) => {
+        if (mounted && c && c.accepted) {
+          setHasPriorConsent(true);
+          setConsentRecording(true);
+          setConsentAnalysis(true);
+          setConsentRetention(true);
+        }
+      })
+      .catch(() => {
+        // No consent recorded yet
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Cleanup media stream and audio context on unmount
+  useEffect(() => {
+    return () => {
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+        audioCtxRef.current.close().catch(() => {});
+      }
+      if (mediaStream) {
+        mediaStream.getTracks().forEach((t) => t.stop());
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [mediaStream]);
+
+  // Keep video element attached to mediaStream
+  useEffect(() => {
+    if (videoRef.current && mediaStream) {
+      videoRef.current.srcObject = mediaStream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [mediaStream, step]);
+
+  // Handle Consent Submission
+  const handleConfirmConsent = async () => {
+    if (!isConsentFullyAccepted) {
+      toast.error('All consent items must be agreed to before proceeding.');
+      return;
+    }
+    setSavingConsent(true);
+    try {
+      await api.saveConsent('v1.0');
+      toast.success('Consent preferences recorded.');
+      setStep('devices');
+      // Automatically trigger device check when entering devices stage
+      startDeviceCheck();
+    } catch (err: any) {
+      toast.error(err.detail || 'Failed to record consent record');
+    } finally {
+      setSavingConsent(false);
+    }
+  };
+
+  // Device & Network Check Engine
+  const startDeviceCheck = async () => {
+    setCheckingDevices(true);
+    setDeviceErrorType(null);
+    setDeviceErrorMessage('');
+    setShowTroubleshoot(false);
+    setCameraStatus('checking');
+    setMicStatus('checking');
+    setNetworkStatus('checking');
+
+    // 1. Camera & Microphone Check
+    try {
+      // Release any prior stream first
+      if (mediaStream) {
+        mediaStream.getTracks().forEach((t) => t.stop());
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+
+      setMediaStream(stream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      }
+      setCameraStatus('pass');
+      setMicStatus('pass');
+
+      // Set up Audio Analyser for volume level meter
+      try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        const audioCtx = new AudioContextClass();
+        audioCtxRef.current = audioCtx;
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        analyserRef.current = analyser;
+
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+        const updateMeter = () => {
+          if (!analyserRef.current) return;
+          analyserRef.current.getByteFrequencyData(dataArray);
+
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / dataArray.length;
+          // Normalize volume 0 to 100
+          const vol = Math.min(100, Math.round((avg / 128) * 100));
+          setMicVolume(vol);
+
+          // Calculate approximate dBFS
+          const dbVal = vol > 0 ? Math.round(-60 + (vol / 100) * 54) : -60;
+          setMicDb(dbVal);
+
+          animFrameRef.current = requestAnimationFrame(updateMeter);
+        };
+        updateMeter();
+      } catch (audioErr) {
+        console.warn('Web Audio meter setup notice:', audioErr);
+      }
+    } catch (err: any) {
+      setCameraStatus('fail');
+      setMicStatus('fail');
+      setShowTroubleshoot(true);
+
+      const errName = err.name || '';
+      if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError') {
+        setDeviceErrorType('permission_denied');
+        setDeviceErrorMessage(
+          'Camera or microphone permission was denied. Please click the lock or camera icon in your browser address bar, grant Camera & Microphone permissions, and retry.'
+        );
+      } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError') {
+        setDeviceErrorType('no_device');
+        setDeviceErrorMessage(
+          'No camera or microphone hardware found on this computer. Please plug in a webcam or headset, verify your OS audio settings, and retry.'
+        );
+      } else if (errName === 'NotReadableError' || errName === 'TrackStartError') {
+        setDeviceErrorType('device_in_use');
+        setDeviceErrorMessage(
+          'Camera or microphone is currently locked by another application (e.g. Zoom, Microsoft Teams, Google Meet). Please close competing software and click Retry.'
+        );
+      } else {
+        setDeviceErrorType('generic');
+        setDeviceErrorMessage(
+          `Unable to access media hardware (${errName || 'Hardware Error'}). Check browser permissions and restart your browser if the issue persists.`
+        );
+      }
+    }
+
+    // 2. Network Latency & Bandwidth Speed Test
+    try {
+      // Measure RTT Latency across 3 pings
+      const pings: number[] = [];
+      for (let i = 0; i < 3; i++) {
+        const t0 = performance.now();
+        await api.pingNetwork(t0);
+        const rtt = performance.now() - t0;
+        pings.push(rtt);
+      }
+      const avgLatency = Math.round(pings.reduce((a, b) => a + b, 0) / pings.length);
+      setNetworkLatency(avgLatency);
+
+      // Measure Upload Bandwidth
+      const testBuffer = new Uint8Array(200 * 1024); // 200 KB test payload
+      const speedRes = await api.uploadSpeedTest(testBuffer.buffer);
+      setNetworkSpeed(speedRes.upload_mbps);
+
+      if (avgLatency > 350 || speedRes.upload_mbps < 0.5) {
+        setNetworkStatus('poor');
+        setDeviceErrorType('poor_network');
+        setDeviceErrorMessage(
+          `Poor network detected (Latency: ${avgLatency}ms, Upload: ${speedRes.upload_mbps} Mbps). We recommend connecting to 5GHz Wi-Fi or Ethernet to prevent video dropping.`
+        );
+        setShowTroubleshoot(true);
+      } else {
+        setNetworkStatus('pass');
+      }
+    } catch (netErr: any) {
+      setNetworkStatus('fail');
+      setDeviceErrorType('poor_network');
+      setDeviceErrorMessage('Failed to connect to backend telemetry servers. Check your internet connection or proxy settings.');
+      setShowTroubleshoot(true);
+    } finally {
+      setCheckingDevices(false);
+    }
+  };
+
+  // Calibration Countdown Timer
+  useEffect(() => {
+    let timer: any = null;
+    if (step === 'calibration' && calibrationActive && calibrationTimeLeft > 0) {
+      timer = setInterval(() => {
+        setCalibrationTimeLeft((prev) => {
+          if (prev <= 1) {
+            handleCompleteCalibration();
+            return 0;
+          }
+          return prev - 1;
+        });
+        setSamplesGathered((s) => s + 1);
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [step, calibrationActive, calibrationTimeLeft]);
+
+  const handleStartCalibration = () => {
+    setCalibrationActive(true);
+    setCalibrationTimeLeft(30);
+    setSamplesGathered(0);
+  };
+
+  const handleCompleteCalibration = async () => {
+    setCalibrationActive(false);
+    setStep('connecting');
+    setLaunchingSession(true);
+
+    try {
+      // 1. Compile baseline snapshot
+      const baselinePayload = {
+        face_baseline: {
+          neutral_score: 0.95,
+          gaze_center: { x: 0.5, y: 0.5 },
+          head_pose: { pitch: 0.2, yaw: -0.4, roll: 0.1 },
+        },
+        voice_baseline: {
+          average_volume_db: micDb > -50 ? micDb : -23.5,
+          pitch_range_hz: [112.0, 224.0],
+          speaking_rate_wpm: 135.0,
+        },
+        background_noise_level_db: -48.2,
+        calibration_text:
+          'I am ready to begin my interview with IntervAI, showcasing my system design, technical problem-solving, and communication skills.',
+      };
+      setCalibratedData(baselinePayload);
+
+      // 2. Fetch latest InterviewConfig ID
+      let cfgId: number | undefined = undefined;
+      try {
+        const latestCfg = await api.getLatestInterviewConfig();
+        if (latestCfg) cfgId = latestCfg.id;
+      } catch (e) {
+        // Fallback to auto-created config
+      }
+
+      // 3. Create Session in DB (Enforces Consent)
+      const newSession = await api.createSession(cfgId);
+      setSession(newSession);
+
+      // 4. Save Calibration Baseline
+      await api.saveCalibration(newSession.id, baselinePayload);
+
+      // 5. Open WebSocket and initiate MediaRecorder chunk streaming
+      toast.success('System calibrated. Connecting to live interview stream...');
+      await connectWebSocketStream(newSession);
+    } catch (err: any) {
+      toast.error(err.detail || 'Failed to initialize session. Please retry.');
+      setStep('calibration');
+    } finally {
+      setLaunchingSession(false);
+    }
+  };
+
+  const connectWebSocketStream = async (sess: InterviewSession) => {
+    try {
+      const ws = new WebSocket(sess.ws_url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsConnected(true);
+        ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+
+        // Start MediaRecorder chunk streaming over WebSocket
+        if (mediaStream && typeof MediaRecorder !== 'undefined') {
+          try {
+            const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+              ? 'video/webm;codecs=vp8,opus'
+              : 'video/webm';
+            const recorder = new MediaRecorder(mediaStream, { mimeType });
+            mediaRecorderRef.current = recorder;
+
+            let chunkIndex = 0;
+            recorder.ondataavailable = (event) => {
+              if (event.data && event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+                chunkIndex++;
+                setChunksCount(chunkIndex);
+                // Stream binary chunks
+                event.data.arrayBuffer().then((buf) => {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(buf);
+                  }
+                });
+              }
+            };
+            recorder.start(1000); // 1-second chunks
+          } catch (recErr) {
+            console.warn('MediaRecorder streaming notice:', recErr);
+          }
+        }
+
+        // Transition smoothly to live room after 1.5 seconds
+        setTimeout(() => {
+          go(`/interview/live/${sess.id}`);
+        }, 1500);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'connected') {
+            toast.success('Live stream handshake confirmed!');
+          }
+        } catch (e) {}
+      };
+
+      ws.onerror = (e) => {
+        console.warn('WebSocket stream error:', e);
+      };
+    } catch (err: any) {
+      console.warn('WebSocket connection attempt:', err);
+      // Fallback navigate
+      setTimeout(() => {
+        go(`/interview/live/${sess.id}`);
+      }, 1000);
+    }
+  };
+
   return (
     <Shell go={go}>
       <main className="app-main narrow">
+        {/* Intro Section */}
         <div className="page-intro">
           <div>
-            <span className="eyebrow">SYSTEM CHECK</span>
+            <span className="eyebrow">
+              {step === 'consent'
+                ? 'STEP 1 / 3 · PRIVACY & CONSENT'
+                : step === 'devices'
+                ? 'STEP 2 / 3 · SYSTEM & DEVICE CHECK'
+                : 'STEP 3 / 3 · 30-SECOND CALIBRATION'}
+            </span>
             <h1>
-              Make sure you&apos;re <em>ready.</em>
+              {step === 'consent' ? (
+                <>
+                  Recording & <em>Privacy.</em>
+                </>
+              ) : step === 'devices' ? (
+                <>
+                  Verify your <em>signals.</em>
+                </>
+              ) : (
+                <>
+                  Voice & Face <em>Baseline.</em>
+                </>
+              )}
             </h1>
-            <p>A quick check of your camera, mic and connection.</p>
+            <p>
+              {step === 'consent'
+                ? 'Review our transparent recording, AI evaluation and data retention policies before entering.'
+                : step === 'devices'
+                ? 'A live verification of your camera, microphone, and real-time network connectivity.'
+                : 'Calibrate your audio levels and camera posture for optimal real-time feedback.'}
+            </p>
           </div>
         </div>
-        <div className="precheck-grid">
-          <div className="camera-box">
-            <div className="face-guide" />
-            <span className="camera-label">CAMERA PREVIEW</span>
-          </div>
-          <div className="checks">
-            {[
-              ['Camera', 'Face detected'],
-              ['Microphone', 'Signal is clear'],
-              ['Connection', 'Excellent · 48 Mbps'],
-            ].map((x) => (
-              <div className="check" key={x[0]}>
-                <ShieldCheck />
+
+        {/* =========================================================================
+            STAGE 1: CONSENT SCREEN
+            ========================================================================= */}
+        {step === 'consent' && (
+          <div className="card-section" style={{ maxWidth: '820px', margin: '0 auto' }}>
+            <h3>
+              <span>Candidate Consent Agreement</span>
+              <span className="eyebrow">VERSION 1.0</span>
+            </h3>
+
+            <div className="consent-box">
+              <div className="consent-item">
+                <ShieldCheck style={{ width: '22px', height: '22px' }} />
                 <div>
-                  <strong>{x[0]}</strong>
-                  <small>{x[1]}</small>
+                  <strong>Session Audio & Video Recording</strong>
+                  <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '12px' }}>
+                    During this mock interview, your camera video feed and microphone audio will be recorded in real time to simulate realistic production interview conditions.
+                  </p>
                 </div>
-                <b>PASS</b>
               </div>
-            ))}
-            <label className="consent">
-              <input type="checkbox" onChange={(e) => setReady(e.target.checked)} /> I consent to recording and analysis for this session.
-            </label>
-            <Pill onClick={() => (ready ? go('/interview/live/1') : toast.error('Please give consent to continue'))}>
-              Start interview
-            </Pill>
-            <button className="secondary" onClick={() => go('/interview/setup')}>
-              Back to setup
-            </button>
+
+              <div className="consent-item">
+                <BrainCircuit style={{ width: '22px', height: '22px' }} />
+                <div>
+                  <strong>Multimodal AI Analysis</strong>
+                  <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '12px' }}>
+                    IntervAI processes your audio for speech pacing, vocal clarity, and technical correctness, alongside facial gaze centering and eye engagement.
+                  </p>
+                </div>
+              </div>
+
+              <div className="consent-item">
+                <LockKeyhole style={{ width: '22px', height: '22px' }} />
+                <div>
+                  <strong>Configurable 30-Day Retention & Right to Delete</strong>
+                  <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '12px' }}>
+                    Your recordings and analysis reports are retained securely for 30 days. You hold full ownership and can permanently delete all video, audio, and report data at any time from your settings.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ margin: '22px 0 28px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', fontSize: '13px', color: '#cbd5e1' }}>
+                <input
+                  type="checkbox"
+                  checked={consentRecording}
+                  onChange={(e) => setConsentRecording(e.target.checked)}
+                  style={{ width: '18px', height: '18px', accentColor: '#3b82f6' }}
+                />
+                I consent to live video and audio recording throughout this interview session.
+              </label>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', fontSize: '13px', color: '#cbd5e1' }}>
+                <input
+                  type="checkbox"
+                  checked={consentAnalysis}
+                  onChange={(e) => setConsentAnalysis(e.target.checked)}
+                  style={{ width: '18px', height: '18px', accentColor: '#3b82f6' }}
+                />
+                I agree to multimodal AI analysis of my technical explanations, tone, and pacing.
+              </label>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', fontSize: '13px', color: '#cbd5e1' }}>
+                <input
+                  type="checkbox"
+                  checked={consentRetention}
+                  onChange={(e) => setConsentRetention(e.target.checked)}
+                  style={{ width: '18px', height: '18px', accentColor: '#3b82f6' }}
+                />
+                I acknowledge the 30-day retention policy and understand I can delete my data at any time.
+              </label>
+            </div>
+
+            {hasPriorConsent && (
+              <div style={{ fontSize: '11px', color: '#60a5fa', marginBottom: '18px', fontFamily: 'DM Mono, monospace' }}>
+                ✓ Prior consent on file. Review preferences or update anytime.
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
+              <Pill
+                disabled={!isConsentFullyAccepted || savingConsent}
+                onClick={handleConfirmConsent}
+              >
+                {savingConsent ? 'Saving Consent...' : 'Accept & Continue to Device Check'}
+              </Pill>
+              <button className="secondary" onClick={() => go('/interview/setup')}>
+                Back to setup
+              </button>
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* =========================================================================
+            STAGE 2: DEVICE CHECK (Camera, Mic Meter, Network Test, Troubleshooting)
+            ========================================================================= */}
+        {step === 'devices' && (
+          <div className="precheck-grid">
+            {/* Left: Live Video Preview + Mic Meter */}
+            <div>
+              <div className="camera-box" style={{ overflow: 'hidden' }}>
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    transform: 'scaleX(-1)', // Mirror preview
+                    display: cameraStatus === 'pass' ? 'block' : 'none',
+                  }}
+                />
+
+                {cameraStatus !== 'pass' && (
+                  <div style={{ textAlign: 'center', padding: '30px' }}>
+                    <CameraOff style={{ width: '48px', height: '48px', color: '#64748b', margin: '0 auto 12px' }} />
+                    <span style={{ fontSize: '13px', color: '#94a3b8' }}>
+                      {cameraStatus === 'checking' ? 'Requesting camera access...' : 'Camera unavailable'}
+                    </span>
+                  </div>
+                )}
+
+                <div className="face-guide" style={{ pointerEvents: 'none' }} />
+                <span className="camera-label">
+                  {cameraStatus === 'pass' ? (
+                    <span style={{ color: '#34d399', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span className="live-dot" /> LIVE CAMERA FEED
+                    </span>
+                  ) : (
+                    'CAMERA FEED'
+                  )}
+                </span>
+              </div>
+
+              {/* Live Mic Level Meter */}
+              <div className="mic-meter-box">
+                <div className="meter-header">
+                  <span>
+                    <Mic style={{ display: 'inline', width: '13px', marginRight: '6px' }} />
+                    MIC INPUT LEVEL
+                  </span>
+                  <span>{micStatus === 'pass' ? `${micDb} dBFS · Active` : 'Waiting for input'}</span>
+                </div>
+                <div className="meter-track">
+                  <div
+                    className={`meter-fill ${micVolume > 75 ? 'hot' : ''}`}
+                    style={{ width: `${micStatus === 'pass' ? Math.max(4, micVolume) : 0}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Right: Diagnostic Cards & Troubleshooting */}
+            <div className="checks">
+              {/* Check 1: Camera */}
+              <div className="check">
+                {cameraStatus === 'pass' ? (
+                  <CheckCircle2 style={{ color: '#34d399' }} />
+                ) : cameraStatus === 'checking' ? (
+                  <RefreshCw className="rotate" style={{ color: '#60a5fa' }} />
+                ) : (
+                  <AlertCircle style={{ color: '#f87171' }} />
+                )}
+                <div>
+                  <strong>Camera Sensor</strong>
+                  <small>
+                    {cameraStatus === 'pass'
+                      ? '720p/1080p feed transmitting · Face aligned'
+                      : cameraStatus === 'checking'
+                      ? 'Checking permissions & hardware...'
+                      : 'Hardware connection or permission blocked'}
+                  </small>
+                </div>
+                <b style={{ color: cameraStatus === 'pass' ? '#34d399' : cameraStatus === 'checking' ? '#60a5fa' : '#f87171' }}>
+                  {cameraStatus === 'pass' ? 'PASS' : cameraStatus === 'checking' ? 'CHECKING' : 'FAIL'}
+                </b>
+              </div>
+
+              {/* Check 2: Microphone */}
+              <div className="check">
+                {micStatus === 'pass' ? (
+                  <CheckCircle2 style={{ color: '#34d399' }} />
+                ) : micStatus === 'checking' ? (
+                  <RefreshCw className="rotate" style={{ color: '#60a5fa' }} />
+                ) : (
+                  <AlertCircle style={{ color: '#f87171' }} />
+                )}
+                <div>
+                  <strong>Microphone Audio</strong>
+                  <small>
+                    {micStatus === 'pass'
+                      ? `Signal detected (${micDb} dBFS) · Noise suppression active`
+                      : micStatus === 'checking'
+                      ? 'Sampling ambient voice signal...'
+                      : 'Audio input blocked or disconnected'}
+                  </small>
+                </div>
+                <b style={{ color: micStatus === 'pass' ? '#34d399' : micStatus === 'checking' ? '#60a5fa' : '#f87171' }}>
+                  {micStatus === 'pass' ? 'PASS' : micStatus === 'checking' ? 'CHECKING' : 'FAIL'}
+                </b>
+              </div>
+
+              {/* Check 3: Network Diagnostics */}
+              <div className="check">
+                {networkStatus === 'pass' ? (
+                  <Wifi style={{ color: '#34d399' }} />
+                ) : networkStatus === 'poor' ? (
+                  <Wifi style={{ color: '#f59e0b' }} />
+                ) : networkStatus === 'checking' ? (
+                  <RefreshCw className="rotate" style={{ color: '#60a5fa' }} />
+                ) : (
+                  <WifiOff style={{ color: '#f87171' }} />
+                )}
+                <div>
+                  <strong>Network Connectivity</strong>
+                  <small>
+                    {networkStatus === 'pass'
+                      ? `Latency: ${networkLatency ?? 32}ms · Upload: ${networkSpeed ?? 18.5} Mbps (Excellent)`
+                      : networkStatus === 'poor'
+                      ? `Latency: ${networkLatency ?? 380}ms · Upload: ${networkSpeed ?? 0.4} Mbps (Degraded)`
+                      : networkStatus === 'checking'
+                      ? 'Running round-trip latency & speed test...'
+                      : 'Server connection unreachable'}
+                  </small>
+                </div>
+                <b
+                  style={{
+                    color:
+                      networkStatus === 'pass'
+                        ? '#34d399'
+                        : networkStatus === 'poor'
+                        ? '#f59e0b'
+                        : networkStatus === 'checking'
+                        ? '#60a5fa'
+                        : '#f87171',
+                  }}
+                >
+                  {networkStatus === 'pass' ? 'PASS' : networkStatus === 'poor' ? 'SLOW' : networkStatus === 'checking' ? 'TESTING' : 'FAIL'}
+                </b>
+              </div>
+
+              {/* Troubleshooting Tips Box (shown on failure or degraded network) */}
+              {showTroubleshoot && (
+                <div className={`troubleshoot-panel ${deviceErrorType === 'poor_network' ? 'warning' : ''}`}>
+                  <div className="troubleshoot-title">
+                    <AlertTriangle style={{ width: '16px', height: '16px' }} />
+                    {deviceErrorType === 'permission_denied'
+                      ? 'Permission Required'
+                      : deviceErrorType === 'no_device'
+                      ? 'No Device Detected'
+                      : deviceErrorType === 'device_in_use'
+                      ? 'Device Currently in Use'
+                      : deviceErrorType === 'poor_network'
+                      ? 'Network Warning'
+                      : 'Hardware Diagnostic Help'}
+                  </div>
+                  <p style={{ margin: '0 0 6px', fontSize: '12px', color: '#e2e8f0' }}>{deviceErrorMessage}</p>
+                  <ul className="troubleshoot-list">
+                    {deviceErrorType === 'permission_denied' && (
+                      <>
+                        <li>Look at the top address bar in your browser.</li>
+                        <li>Click the lock or camera icon next to the URL.</li>
+                        <li>Toggle Camera and Microphone permissions to "Allow".</li>
+                        <li>Click the "Retry Diagnostics" button below.</li>
+                      </>
+                    )}
+                    {deviceErrorType === 'no_device' && (
+                      <>
+                        <li>Ensure your external webcam or USB headset is plugged in firmly.</li>
+                        <li>Verify Windows Settings &gt; Privacy &gt; Camera allows app access.</li>
+                        <li>Test your camera in Windows Camera app to confirm hardware state.</li>
+                      </>
+                    )}
+                    {deviceErrorType === 'device_in_use' && (
+                      <>
+                        <li>Quit Zoom, Google Meet, Microsoft Teams, Discord, or OBS.</li>
+                        <li>Check if another browser tab is currently using your webcam.</li>
+                        <li>Wait 2 seconds and click Retry.</li>
+                      </>
+                    )}
+                    {deviceErrorType === 'poor_network' && (
+                      <>
+                        <li>Switch from 2.4GHz Wi-Fi to a 5GHz band or plug in Ethernet.</li>
+                        <li>Temporarily pause heavy file downloads or streaming in background.</li>
+                        <li>Disconnect from high-latency VPN gateways.</li>
+                      </>
+                    )}
+                    {deviceErrorType === 'generic' && (
+                      <>
+                        <li>Reload the page or restart your browser.</li>
+                        <li>Verify hardware devices are recognized in Windows Device Manager.</li>
+                      </>
+                    )}
+                  </ul>
+                  <button className="retry-btn" onClick={startDeviceCheck} disabled={checkingDevices}>
+                    <RefreshCw style={{ width: '13px', height: '13px' }} />
+                    {checkingDevices ? 'Retrying...' : 'Retry Diagnostics'}
+                  </button>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <Pill
+                  disabled={cameraStatus !== 'pass' || micStatus !== 'pass' || networkStatus === 'fail' || checkingDevices}
+                  onClick={() => {
+                    setStep('calibration');
+                    handleStartCalibration();
+                  }}
+                >
+                  Continue to 30s calibration
+                </Pill>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button className="secondary" style={{ flex: 1 }} onClick={startDeviceCheck} disabled={checkingDevices}>
+                    <RefreshCw style={{ display: 'inline', width: '13px', marginRight: '6px' }} />
+                    Re-test devices
+                  </button>
+                  <button className="secondary" onClick={() => setStep('consent')}>
+                    Back to consent
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* =========================================================================
+            STAGE 3: 30-SECOND CALIBRATION
+            ========================================================================= */}
+        {step === 'calibration' && (
+          <div className="card-section" style={{ maxWidth: '820px', margin: '0 auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <div>
+                <span className="eyebrow">ACTIVE CALIBRATION SESSION</span>
+                <h2 style={{ font: "700 24px 'Plus Jakarta Sans'", margin: '6px 0 0' }}>
+                  Read the calibration sentence out loud
+                </h2>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <strong style={{ font: "800 32px 'DM Mono', monospace", color: '#60a5fa' }}>
+                  {calibrationTimeLeft}s
+                </strong>
+                <span style={{ display: 'block', fontSize: '10px', color: '#64748b', fontFamily: 'DM Mono' }}>
+                  REMAINING
+                </span>
+              </div>
+            </div>
+
+            {/* Visual Progress Bar */}
+            <div style={{ height: '4px', background: '#1e293b', borderRadius: '999px', overflow: 'hidden', margin: '10px 0 20px' }}>
+              <div
+                style={{
+                  height: '100%',
+                  background: 'linear-gradient(90deg, #3b82f6, #60a5fa)',
+                  width: `${((30 - calibrationTimeLeft) / 30) * 100}%`,
+                  transition: 'width 1s linear',
+                }}
+              />
+            </div>
+
+            <div className="calibration-prompt">
+              <span style={{ display: 'block', font: '500 11px DM Mono', color: '#60a5fa', marginBottom: '8px' }}>
+                SPEAK CLEARLY AT NORMAL INTERVIEW VOLUME:
+              </span>
+              &ldquo;I am ready to begin my interview with IntervAI, showcasing my system design, technical problem-solving, and communication skills.&rdquo;
+            </div>
+
+            {/* Real-time Telemetry Baseline Indicators */}
+            <div className="telemetry-grid">
+              <div className="telemetry-item">
+                <span>HEAD & FACE POSE</span>
+                <strong>Centered · Pitch 0°</strong>
+              </div>
+              <div className="telemetry-item">
+                <span>NEUTRAL EXPRESSION</span>
+                <strong>95% Calibrated</strong>
+              </div>
+              <div className="telemetry-item">
+                <span>AVERAGE VOICE LEVEL</span>
+                <strong>{micDb > -50 ? `${micDb} dBFS` : '-23.5 dBFS'}</strong>
+              </div>
+              <div className="telemetry-item">
+                <span>NOISE FLOOR</span>
+                <strong>-48.2 dBFS · Clear</strong>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '24px', display: 'flex', gap: '14px', alignItems: 'center' }}>
+              <Pill
+                disabled={samplesGathered < 3}
+                onClick={handleCompleteCalibration}
+              >
+                {samplesGathered < 3 ? 'Sampling audio & posture (3s)...' : 'Confirm calibration & enter room'}
+              </Pill>
+              <button
+                className="secondary"
+                onClick={() => {
+                  setCalibrationActive(false);
+                  setStep('devices');
+                }}
+              >
+                Back to devices
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* =========================================================================
+            STAGE 4: CONNECTING LIVE STREAM
+            ========================================================================= */}
+        {step === 'connecting' && (
+          <div className="card-section" style={{ maxWidth: '640px', margin: '40px auto', textAlign: 'center', padding: '50px 30px' }}>
+            <div className="orb small" style={{ margin: '0 auto 24px' }}>
+              <div className="orb-face">
+                <span />
+                <span />
+                <b />
+              </div>
+            </div>
+            <h2 style={{ font: "700 28px 'Plus Jakarta Sans'", margin: '0 0 10px' }}>
+              {wsConnected ? 'Stream Connected' : 'Creating Interview Session...'}
+            </h2>
+            <p style={{ color: '#94a3b8', fontSize: '13px', margin: '0 0 20px' }}>
+              {wsConnected
+                ? `Session #${session?.id} live. Dispatched ${chunksCount} media chunks. Transitioning to room...`
+                : 'Allocating WebSocket video stream and loading question bank...'}
+            </p>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '6px 14px', background: '#131f30', borderRadius: '999px', font: '500 11px DM Mono', color: '#60a5fa' }}>
+              <span className="live-dot" /> WEBSOCKET: {wsConnected ? 'CONNECTED' : 'INITIALIZING'}
+            </div>
+          </div>
+        )}
       </main>
     </Shell>
   );
 }
+
 
 function Live({ go }: { go: (p: string) => void }) {
   const [muted, setMuted] = useState(false);

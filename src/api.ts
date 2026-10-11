@@ -428,6 +428,89 @@ export const api = {
       body: payload ? JSON.stringify(payload) : undefined,
     });
   },
+
+  // --- Phase 2.3 Question Pool Generation & Bank ---
+
+  async generateQuestionPool(
+    interviewId: number,
+    options?: { force_regenerate?: boolean; similarity_threshold?: number; multiplier?: number }
+  ): Promise<QuestionPoolResponse> {
+    return request<QuestionPoolResponse>(`/interview/${interviewId}/questions/generate`, {
+      method: 'POST',
+      body: options ? JSON.stringify(options) : undefined,
+    });
+  },
+
+  async getQuestionPool(interviewId: number): Promise<QuestionPoolResponse> {
+    return request<QuestionPoolResponse>(`/interview/${interviewId}/questions`, { method: 'GET' });
+  },
+
+  // --- Phase 3.1 Pre-Interview Check, Consent, Calibration & Session ---
+
+  async saveConsent(version: string = 'v1.0'): Promise<ConsentRecord> {
+    return request<ConsentRecord>('/session/consent', {
+      method: 'POST',
+      body: JSON.stringify({ version, accepted: true }),
+    });
+  },
+
+  async getLatestConsent(): Promise<ConsentRecord> {
+    return request<ConsentRecord>('/session/consent', { method: 'GET' });
+  },
+
+  async pingNetwork(clientTs?: number): Promise<NetworkPingResponse> {
+    const url = clientTs !== undefined ? `/session/ping?client_ts=${clientTs}` : '/session/ping';
+    return request<NetworkPingResponse>(url, { method: 'GET' });
+  },
+
+  async uploadSpeedTest(payload: Blob | ArrayBuffer): Promise<NetworkSpeedTestResponse> {
+    const token = localStorage.getItem('access_token');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/octet-stream',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const res = await fetch(`${API_BASE_URL}/session/speed-test`, {
+      method: 'POST',
+      headers,
+      body: payload,
+    });
+    if (!res.ok) {
+      throw new Error(`Speed test failed with status ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async createSession(interviewId?: number): Promise<InterviewSession> {
+    return request<InterviewSession>('/session', {
+      method: 'POST',
+      body: JSON.stringify({ interview_id: interviewId }),
+    });
+  },
+
+  async getSession(sessionId: number): Promise<InterviewSession> {
+    return request<InterviewSession>(`/session/${sessionId}`, { method: 'GET' });
+  },
+
+  async saveCalibration(
+    sessionId: number,
+    payload: {
+      face_baseline?: Record<string, any>;
+      voice_baseline?: Record<string, any>;
+      background_noise_level_db?: number;
+      calibration_text?: string;
+    }
+  ): Promise<SessionCalibration> {
+    return request<SessionCalibration>(`/session/${sessionId}/calibration`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async getCalibration(sessionId: number): Promise<SessionCalibration> {
+    return request<SessionCalibration>(`/session/${sessionId}/calibration`, { method: 'GET' });
+  },
 };
 
 export interface ConfirmedProfile {
@@ -530,6 +613,90 @@ export interface InterviewBlueprintRequest {
   focus_topics?: string[];
   mixed_ratio?: Record<string, number>;
 }
+
+export interface QuestionBankItem {
+  id: number;
+  interview_id: number;
+  question_hash: string;
+  text: string;
+  topic: string;
+  subtopic?: string | null;
+  difficulty: string;
+  question_type: string;
+  expected_keywords: string[];
+  ideal_answer_points: string[];
+  max_time_seconds: number;
+  cv_reference?: string | null;
+  is_weak_area: boolean;
+  rank_score: number;
+  is_reserve_followup: boolean;
+  followup_templates?: string[];
+  created_at: string;
+}
+
+export interface QuestionPoolResponse {
+  interview_id: number;
+  total_generated: number;
+  deduped_count: number;
+  questions: QuestionBankItem[];
+  reserve_followups: QuestionBankItem[];
+  blueprint_summary: Record<string, any>;
+}
+
+export interface ConsentRecord {
+  id: number;
+  user_id: number;
+  version: string;
+  retention_days: number;
+  accepted: boolean;
+  can_delete: boolean;
+  accepted_at: string;
+}
+
+export interface NetworkPingResponse {
+  server_time: string;
+  client_timestamp?: number | null;
+  status: string;
+}
+
+export interface NetworkSpeedTestResponse {
+  bytes_received: number;
+  duration_ms: number;
+  upload_mbps: number;
+  status: string;
+}
+
+export interface SessionCalibration {
+  id: number;
+  session_id: number;
+  user_id: number;
+  face_baseline: {
+    neutral_score?: number;
+    gaze_center?: { x: number; y: number };
+    head_pose?: { pitch: number; yaw: number; roll: number };
+  };
+  voice_baseline: {
+    average_volume_db?: number;
+    pitch_range_hz?: number[];
+    speaking_rate_wpm?: number;
+  };
+  background_noise_level_db: number;
+  calibration_text?: string | null;
+  calibrated_at: string;
+}
+
+export interface InterviewSession {
+  id: number;
+  user_id: number;
+  interview_id: number;
+  status: string;
+  session_token: string;
+  started_at: string;
+  ended_at?: string | null;
+  ws_url: string;
+  calibration?: SessionCalibration | null;
+}
+
 
 
 

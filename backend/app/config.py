@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     DEV_MODE: bool = True
     GOOGLE_CLIENT_ID: str = ""
     CORS_ORIGINS: str = "http://localhost:5174,http://localhost:5173,http://127.0.0.1:5174,http://127.0.0.1:5173"
+    RECORDING_RETENTION_DAYS: int = 30
     
     # LLM Service Configuration
     LLM_PROVIDER: str = "mock"  # "mock", "openai", "gemini", etc.

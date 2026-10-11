@@ -498,6 +498,83 @@ class QuestionGenerationRequest(BaseModel):
     multiplier: Optional[float] = 2.5
 
 
+# --- Phase 3.1 Pre-Interview Check, Consent, Calibration & Session Schemas ---
+
+class ConsentCreate(BaseModel):
+    version: str = Field(default="v1.0", description="Consent terms version")
+    accepted: bool = Field(default=True, description="Whether recording and analysis consent is granted")
+
+
+class ConsentOut(BaseModel):
+    id: int
+    user_id: int
+    version: str
+    retention_days: int
+    accepted: bool
+    can_delete: bool
+    accepted_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SessionCalibrationCreate(BaseModel):
+    face_baseline: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Neutral expression, gaze center, head pose")
+    voice_baseline: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Average volume, pitch range, speaking rate")
+    background_noise_level_db: Optional[float] = Field(default=-50.0, description="Ambient noise floor in dBFS")
+    calibration_text: Optional[str] = Field(
+        default="I am ready to begin my interview with IntervAI, showcasing my system design, technical problem-solving, and communication skills.",
+        description="Sentence read during calibration",
+    )
+
+
+class SessionCalibrationOut(BaseModel):
+    id: int
+    session_id: int
+    user_id: int
+    face_baseline: Dict[str, Any]
+    voice_baseline: Dict[str, Any]
+    background_noise_level_db: float
+    calibration_text: Optional[str]
+    calibrated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SessionCreate(BaseModel):
+    interview_id: Optional[int] = Field(default=None, description="InterviewConfig ID; defaults to latest if omitted")
+
+
+class SessionOut(BaseModel):
+    id: int
+    user_id: int
+    interview_id: int
+    status: str
+    session_token: str
+    started_at: datetime
+    ended_at: Optional[datetime] = None
+    ws_url: str
+    calibration: Optional[SessionCalibrationOut] = None
+
+    class Config:
+        from_attributes = True
+
+
+class NetworkPingOut(BaseModel):
+    server_time: datetime
+    client_timestamp: Optional[float] = None
+    status: str = "ok"
+
+
+class NetworkSpeedTestOut(BaseModel):
+    bytes_received: int
+    duration_ms: float
+    upload_mbps: float
+    status: str = "ok"
+
+
+
 
 
 
