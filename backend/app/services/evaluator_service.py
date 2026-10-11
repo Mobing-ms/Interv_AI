@@ -196,6 +196,7 @@ def deterministic_evaluate(
     question: Dict[str, Any],
     transcript: str,
     session_context: List[Dict[str, Any]],
+    session_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Pure Python rule-based evaluator providing deterministic scoring, classification,
@@ -386,6 +387,7 @@ class LLMAnswerEvaluator(EvaluatorModuleProtocol):
         question: Dict[str, Any],
         answer: str,
         session_context: List[Dict[str, Any]],
+        session_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Evaluates a candidate's answer and returns validated JSON output.
@@ -456,5 +458,5 @@ class LLMAnswerEvaluator(EvaluatorModuleProtocol):
             return result
 
         except Exception as e:
-            logger.warning("LLM evaluation call failed or not configured (%s); using deterministic evaluator", e)
+            logger.warning("[Evaluator][session_id=%s] LLM evaluation call failed or not configured (%s); using deterministic evaluator", session_id or "none", e)
             return deterministic_evaluate(question, answer, session_context)

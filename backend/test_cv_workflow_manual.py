@@ -4,6 +4,11 @@ import zipfile
 import pypdf
 import docx
 from PIL import Image, ImageDraw
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -80,8 +85,12 @@ def create_sample_docx() -> bytes:
     return buf.getvalue()
 
 
-def test_cv_workflow():
-    print("--- Starting Phase 1.3 CV Tests ---")
+import unittest
+
+
+class TestCVWorkflow(unittest.TestCase):
+    def test_cv_workflow(self):
+        print("--- Starting Phase 1.3 CV Tests ---")
 
     # 1. Authenticate user
     signup_data = {

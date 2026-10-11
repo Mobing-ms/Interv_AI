@@ -1,7 +1,7 @@
 import random
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -28,6 +28,7 @@ from app.auth import (
     decode_token,
     get_current_user,
 )
+from app.services.google_auth_service import verify_google_id_token
 
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -37,8 +38,53 @@ def generate_6digit_otp() -> str:
     return f"{random.randint(100000, 999999)}"
 
 
+def _try_link_guest_session(
+    request: Request,
+    response: Response,
+    body_guest_id: Optional[int],
+    user_id: int,
+    db: Session,
+):
+    """
+    Links an anonymous guest session to a newly created or authenticated user account.
+    Checks:
+    1. Explicit body.guest_session_id
+    2. X-Guest-Token header
+    3. guest_token cookie
+    """
+    guest_sess_id = body_guest_id
+    if not guest_sess_id:
+        guest_cookie = request.cookies.get("guest_token")
+        guest_hdr = request.headers.get("X-Guest-Token")
+        token_to_check = guest_cookie or guest_hdr
+        if token_to_check:
+            try:
+                from app.auth import decode_guest_token
+                payload = decode_guest_token(token_to_check)
+                guest_sess_id = payload.get("session_id")
+            except Exception:
+                pass
+
+    if guest_sess_id:
+        try:
+            from app.services.guest_service import link_guest_session_to_user
+            link_guest_session_to_user(int(guest_sess_id), user_id, db)
+        except Exception:
+            pass
+        try:
+            response.delete_cookie("guest_token")
+        except Exception:
+            pass
+
+
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-def signup(body: UserSignUp, db: Session = Depends(get_db)):
+@router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+def signup(
+    request: Request,
+    response: Response,
+    body: UserSignUp,
+    db: Session = Depends(get_db),
+):
     normalized_email = body.email.strip().lower()
 
     # Check if user already exists
@@ -78,6 +124,9 @@ def signup(body: UserSignUp, db: Session = Depends(get_db)):
             print(f"[IntervAI DEV OTP] Verification OTP for {normalized_email}: {otp_code}")
             print(f"==========================================\n", flush=True)
 
+    # Link guest session if candidate practiced as a guest before signing up
+    _try_link_guest_session(request, response, body.guest_session_id, user.id, db)
+
     access_token = create_access_token({"sub": str(user.id)})
     refresh_token = create_refresh_token({"sub": str(user.id)})
 
@@ -91,7 +140,12 @@ def signup(body: UserSignUp, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=AuthResponse)
 @limiter.limit("10/minute")
-def login(request: Request, body: UserLogin, db: Session = Depends(get_db)):
+def login(
+    request: Request,
+    response: Response,
+    body: UserLogin,
+    db: Session = Depends(get_db),
+):
     normalized_email = body.email.strip().lower()
     user = db.query(User).filter(User.email == normalized_email).first()
 
@@ -109,6 +163,9 @@ def login(request: Request, body: UserLogin, db: Session = Depends(get_db)):
             detail="Email not verified. Please verify your email.",
         )
 
+    # Link guest session if candidate practiced as a guest before logging in
+    _try_link_guest_session(request, response, body.guest_session_id, user.id, db)
+
     access_token = create_access_token({"sub": str(user.id)})
     refresh_token = create_refresh_token({"sub": str(user.id)})
 
@@ -121,67 +178,65 @@ def login(request: Request, body: UserLogin, db: Session = Depends(get_db)):
 
 
 @router.post("/google", response_model=AuthResponse)
-def google_auth(body: GoogleAuthRequest, db: Session = Depends(get_db)):
-    email: Optional[str] = None
-    name: Optional[str] = None
-
+def google_auth(
+    request: Request,
+    response: Response,
+    body: GoogleAuthRequest,
+    db: Session = Depends(get_db),
+):
     token_str = body.credential or body.id_token or body.token
-    if token_str:
-        # First attempt genuine Google OAuth verification
-        try:
-            from google.oauth2 import id_token as google_id_token
-            from google.auth.transport import requests as google_requests
-
-            id_info = google_id_token.verify_oauth2_token(
-                token_str,
-                google_requests.Request(),
-                settings.GOOGLE_CLIENT_ID if settings.GOOGLE_CLIENT_ID else None,
-            )
-            email = id_info.get("email")
-            name = id_info.get("name") or (email.split("@")[0] if email else "Google User")
-        except Exception:
-            # If not a valid Google signed token (e.g. testing with dev/mock token), attempt unverified payload extraction
-            try:
-                import jwt as pyjwt
-                unverified = pyjwt.decode(token_str, options={"verify_signature": False})
-                if unverified.get("email"):
-                    email = unverified.get("email")
-                    name = unverified.get("name") or email.split("@")[0]
-            except Exception:
-                pass
-
-    # If directly provided in request (dev fallback)
-    if not email and body.email:
-        email = body.email
-        name = body.name or email.split("@")[0]
-
-    if not email:
+    if not token_str or not token_str.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Could not verify Google ID token. Please provide a valid token or credentials.",
+            detail="Google ID token (credential) is required.",
         )
 
-    normalized_email = email.strip().lower()
-    user = db.query(User).filter(User.email == normalized_email).first()
+    client_id = settings.GOOGLE_CLIENT_ID
+    if not client_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Google Client ID is not configured on the server. Please set GOOGLE_CLIENT_ID in backend .env",
+        )
+
+    try:
+        id_info = verify_google_id_token(token_str.strip(), client_id=client_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Google ID token verification failed: {str(e)}",
+        )
+
+    email = id_info.get("email", "").strip().lower()
+    name = (id_info.get("name") or email.split("@")[0]).strip()
+
+    user = db.query(User).filter(User.email == email).first()
 
     if not user:
-        display_name = (name or normalized_email.split("@")[0]).strip()
         user = User(
-            name=display_name,
-            email=normalized_email,
+            name=name,
+            email=email,
             password_hash=None,
             auth_provider="google",
             is_verified=True,
+            onboarding_status="not_started",
         )
         db.add(user)
         db.commit()
         db.refresh(user)
     else:
-        # User exists; if auth_provider was local, ensure verified
+        # User exists; ensure verified since Google verified the email
         if not user.is_verified:
             user.is_verified = True
             db.commit()
             db.refresh(user)
+
+    # Link guest session if candidate practiced as a guest before Google login
+    _try_link_guest_session(request, response, body.guest_session_id, user.id, db)
 
     access_token = create_access_token({"sub": str(user.id)})
     refresh_token = create_refresh_token({"sub": str(user.id)})

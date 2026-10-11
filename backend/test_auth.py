@@ -69,16 +69,26 @@ def test_signup_and_login_flow():
     assert logout_res.status_code == 200
 
     # 7. Google Auth
-    google_res = client.post("/auth/google", json={
-        "email": "sarah.connor@gmail.com",
-        "name": "Sarah Connor"
-    })
-    assert google_res.status_code == 200
-    g_body = google_res.json()
-    assert g_body["user"]["name"] == "Sarah Connor"
-    assert g_body["user"]["email"] == "sarah.connor@gmail.com"
-    assert g_body["user"]["auth_provider"] == "google"
-    assert g_body["user"]["is_verified"] is True
+    from unittest.mock import patch
+    from app.config import settings
+    orig_cid = settings.GOOGLE_CLIENT_ID
+    settings.GOOGLE_CLIENT_ID = "mock-google-client-id"
+    try:
+        with patch("app.routers.auth.verify_google_id_token") as mock_verify:
+            mock_verify.return_value = {
+                "email": "sarah.connor@gmail.com",
+                "name": "Sarah Connor",
+                "sub": "google-sub-sarah-123",
+            }
+            google_res = client.post("/auth/google", json={"credential": "mocked-valid-token"})
+            assert google_res.status_code == 200, google_res.text
+            g_body = google_res.json()
+            assert g_body["user"]["name"] == "Sarah Connor"
+            assert g_body["user"]["email"] == "sarah.connor@gmail.com"
+            assert g_body["user"]["auth_provider"] == "google"
+            assert g_body["user"]["is_verified"] is True
+    finally:
+        settings.GOOGLE_CLIENT_ID = orig_cid
 
     # Check /auth/me with google user's token
     g_me = client.get("/auth/me", headers={"Authorization": f"Bearer {g_body['access_token']}"})

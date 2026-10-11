@@ -55,10 +55,11 @@ class LLMService:
             schema_cls=response_schema,
         )
 
-    async def call_raw_llm(self, system_prompt: str, user_prompt: str) -> str:
+    async def call_raw_llm(self, system_prompt: str, user_prompt: str, session_id: Optional[int] = None) -> str:
         """Invokes the configured LLM provider and returns the raw string response."""
         prompt_size = len(system_prompt) + len(user_prompt)
-        logger.info(f"[LLM] Dispatching request to provider='{self.provider}' model='{self.model}' | Prompt length: {prompt_size} chars")
+        sess_tag = f"[session_id={session_id}] " if session_id else ""
+        logger.info(f"[LLM]{sess_tag} Dispatching request to provider='{self.provider}' model='{self.model}' | Prompt length: {prompt_size} chars")
 
         if self._mock_handler:
             mock_res = self._mock_handler(system_prompt, user_prompt)
@@ -66,13 +67,13 @@ class LLMService:
                 raw_text = mock_res
             else:
                 raw_text = json.dumps(mock_res)
-            logger.info(f"[LLM] Mock handler returned {len(raw_text)} chars")
+            logger.info(f"[LLM]{sess_tag} Mock handler returned {len(raw_text)} chars")
             return raw_text
 
         if self.provider == "mock":
             # Default fallback mock parser for dev without API keys
             raw_text = self._default_mock_response(system_prompt, user_prompt)
-            logger.info(f"[LLM] Built-in mock returned {len(raw_text)} chars")
+            logger.info(f"[LLM]{sess_tag} Built-in mock returned {len(raw_text)} chars")
             return raw_text
 
         elif self.provider in ("openai", "azure", "groq", "ollama"):
@@ -95,7 +96,7 @@ class LLMService:
                 res.raise_for_status()
                 data = res.json()
                 content = data["choices"][0]["message"]["content"]
-                logger.info(f"[LLM] Provider returned response of {len(content)} chars")
+                logger.info(f"[LLM]{sess_tag} Provider returned response of {len(content)} chars")
                 return content
 
         elif self.provider == "gemini":
@@ -117,7 +118,7 @@ class LLMService:
                 res.raise_for_status()
                 data = res.json()
                 content = data["candidates"][0]["content"]["parts"][0]["text"]
-                logger.info(f"[LLM] Gemini returned response of {len(content)} chars")
+                logger.info(f"[LLM]{sess_tag} Gemini returned response of {len(content)} chars")
                 return content
 
         else:
@@ -129,18 +130,21 @@ class LLMService:
         user_prompt: str,
         schema_cls: Type[T],
         max_retries: Optional[int] = None,
+        session_id: Optional[int] = None,
     ) -> T:
         """
         Invokes LLM with JSON-mode output, validates against Pydantic schema,
-        and retries with backoff and validation error feedback appended if invalid.
+        and retries with exponential backoff and validation error feedback appended if invalid.
+        Catches JSON errors, schema validation errors, network errors, and timeouts.
         """
         retries = self.max_retries if max_retries is None else max_retries
         current_user_prompt = user_prompt
         last_error = None
+        sess_tag = f"[session_id={session_id}] " if session_id else ""
 
         for attempt in range(retries + 1):
             try:
-                raw_response = await self.call_raw_llm(system_prompt, current_user_prompt)
+                raw_response = await self.call_raw_llm(system_prompt, current_user_prompt, session_id=session_id)
 
                 # Strip markdown code fencing if LLM wraps in ```json ... ```
                 clean_response = raw_response.strip()
@@ -159,7 +163,7 @@ class LLMService:
             except (json.JSONDecodeError, ValidationError) as e:
                 last_error = str(e)
                 logger.warning(
-                    f"[LLM] Validation failed on attempt {attempt + 1}/{retries + 1}: {last_error}"
+                    f"[LLM]{sess_tag} Validation failed on attempt {attempt + 1}/{retries + 1}: {last_error}"
                 )
 
                 if attempt < retries:
@@ -172,6 +176,17 @@ class LLMService:
                         f"Your output failed validation with the following error:\n{last_error}\n"
                         f"Ensure you return valid JSON strictly conforming to the requested schema. Do not invent fields."
                     )
+                else:
+                    break
+
+            except (httpx.HTTPError, asyncio.TimeoutError) as net_err:
+                last_error = str(net_err)
+                logger.warning(
+                    f"[LLM]{sess_tag} Network/timeout error on attempt {attempt + 1}/{retries + 1}: {last_error}"
+                )
+                if attempt < retries:
+                    backoff = 0.5 * (2 ** attempt)
+                    await asyncio.sleep(backoff)
                 else:
                     break
 

@@ -35,13 +35,20 @@ def sanitize_filename(filename: str) -> str:
     return clean or "document"
 
 
+import logging
+
+logger = logging.getLogger("intervai.cv")
+
 def process_cv_extraction(cv_id: int, file_path: str, file_type: str):
     db: Session = SessionLocal()
     try:
         cv_doc = db.query(CVDocument).filter(CVDocument.id == cv_id).first()
         if not cv_doc:
+            logger.warning("[CV][cv_id=%d] Document not found for background extraction", cv_id)
             return
 
+        user_id = cv_doc.user_id
+        logger.info("[CV][cv_id=%d][user_id=%d] Starting background CV extraction (type=%s)", cv_id, user_id, file_type)
         cv_doc.status = "extracting"
         db.commit()
 
@@ -59,16 +66,19 @@ def process_cv_extraction(cv_id: int, file_path: str, file_type: str):
                 user.onboarding_status = "cv_done"
 
             db.commit()
+            logger.info("[CV][cv_id=%d][user_id=%d] CV text extracted successfully (%d chars)", cv_id, user_id, len(extracted_text))
         except CVValidationError as ve:
             cv_doc.status = "failed"
             cv_doc.error_code = ve.error_code
             cv_doc.error_message = ve.message
             db.commit()
+            logger.warning("[CV][cv_id=%d][user_id=%d] CV validation error: code=%s message=%s", cv_id, user_id, ve.error_code, ve.message)
         except Exception as e:
             cv_doc.status = "failed"
             cv_doc.error_code = "UNREADABLE"
             cv_doc.error_message = f"Extraction failed: {str(e)}"
             db.commit()
+            logger.error("[CV][cv_id=%d][user_id=%d] Unexpected extraction failure: %s", cv_id, user_id, e)
     finally:
         db.close()
 

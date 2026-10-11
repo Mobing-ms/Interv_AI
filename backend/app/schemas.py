@@ -8,11 +8,13 @@ class UserSignUp(BaseModel):
     name: str = Field(..., min_length=1, description="Full name of user")
     email: EmailStr = Field(..., description="Valid email address")
     password: str = Field(..., min_length=8, description="Password of at least 8 characters")
+    guest_session_id: Optional[int] = None
 
 
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+    guest_session_id: Optional[int] = None
 
 
 class GoogleAuthRequest(BaseModel):
@@ -21,6 +23,7 @@ class GoogleAuthRequest(BaseModel):
     id_token: Optional[str] = None
     email: Optional[str] = None
     name: Optional[str] = None
+    guest_session_id: Optional[int] = None
 
 
 class OTPRequest(BaseModel):
@@ -370,7 +373,8 @@ class InterviewConfigCreate(BaseModel):
 
 class InterviewConfigOut(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int] = None
+    is_guest: Optional[bool] = False
     round_type: str
     difficulty: str
     duration_minutes: int
@@ -507,7 +511,9 @@ class ConsentCreate(BaseModel):
 
 class ConsentOut(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int] = None
+    is_guest: Optional[bool] = False
+    guest_id: Optional[str] = None
     version: str
     retention_days: int
     accepted: bool
@@ -531,7 +537,7 @@ class SessionCalibrationCreate(BaseModel):
 class SessionCalibrationOut(BaseModel):
     id: int
     session_id: int
-    user_id: int
+    user_id: Optional[int] = None
     face_baseline: Dict[str, Any]
     voice_baseline: Dict[str, Any]
     background_noise_level_db: float
@@ -548,7 +554,9 @@ class SessionCreate(BaseModel):
 
 class SessionOut(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int] = None
+    is_guest: Optional[bool] = False
+    guest_id: Optional[str] = None
     interview_id: int
     status: str
     session_token: str

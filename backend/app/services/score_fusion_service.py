@@ -552,6 +552,9 @@ def execute_u_memory_update(
     1. Updates UserMemory: rolling topic averages, weak tags, session count, and timestamp.
     2. Updates AskedQuestion history: records question hash, topic, score, and timestamp.
     """
+    if not user_id:
+        return {}
+
     # 1. Update UserMemory
     mem: Optional[UserMemory] = db.query(UserMemory).filter(UserMemory.user_id == user_id).first()
     if not mem:
@@ -738,6 +741,7 @@ def process_and_persist_session_result(
             res_record = SessionResult(
                 session_id=session_id,
                 user_id=user_id,
+                is_guest=bool(sess.is_guest),
                 round_type=round_type,
                 role=role,
                 overall_score=overall_score,
@@ -755,15 +759,17 @@ def process_and_persist_session_result(
             db.commit()
             db.refresh(res_record)
 
-        # 5. U Memory Update
-        mem_update_info = execute_u_memory_update(
-            user_id=user_id,
-            session_id=session_id,
-            per_question_fused=per_question_scores,
-            ranked_weak_areas=ranked_weaks,
-            overall_score=overall_score,
-            db=db,
-        )
+        # 5. U Memory Update (only for registered users with account)
+        mem_update_info = {}
+        if user_id:
+            mem_update_info = execute_u_memory_update(
+                user_id=user_id,
+                session_id=session_id,
+                per_question_fused=per_question_scores,
+                ranked_weak_areas=ranked_weaks,
+                overall_score=overall_score,
+                db=db,
+            )
 
         result_payload = {
             "id": res_record.id,

@@ -521,7 +521,7 @@ class SessionOrchestrator:
             elif curr_state == SessionState.EVALUATING:
                 curr_q = self.state.current_question or {}
                 ans_text = self.state.current_answer_text or "Candidate provided no verbal response."
-                eval_res = self.evaluator.evaluate(curr_q, ans_text, self.state.session_context)
+                eval_res = self.evaluator.evaluate(curr_q, ans_text, self.state.session_context, session_id=self.session_id)
 
                 # Append to persistent session context with validated evaluation metrics
                 context_item = {

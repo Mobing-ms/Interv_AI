@@ -174,6 +174,7 @@ def get_onboarding_status(
 
 
 @router.put("/confirm", response_model=ProfileOut)
+@router.post("/confirm", response_model=ProfileOut)
 def confirm_canonical_profile(
     body: ProfileConfirmRequest,
     current_user: User = Depends(get_current_user),
@@ -255,4 +256,105 @@ def get_profile_versions(
         }
         for p in profiles
     ]
+
+
+@router.delete("/me/data", status_code=status.HTTP_200_OK)
+@router.delete("/data", status_code=status.HTTP_200_OK)
+def delete_my_personal_data(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    GDPR & CCPA Compliant 'Delete My Data' endpoint.
+    Permanently purges:
+    - All uploaded CV documents and files from storage.
+    - All recorded audio chunks, video frames, and transcripts.
+    - All interview sessions, calibrations, signals, integrity events, scores, and reports.
+    - Target profile, education profile, and canonical profile records.
+    - User memory and question history.
+    - User consent audit records.
+    """
+    import os
+    import shutil
+    import logging
+    from app.models import (
+        CVDocument,
+        InterviewSession,
+        InterviewConfig,
+        SessionCalibration,
+        SignalTimeSeries,
+        IntegrityEvent,
+        SessionAnalysisJob,
+        SessionResult,
+        SessionReport,
+        UserConsent,
+        UserMemory,
+        AskedQuestion,
+    )
+    from app.services.answer_capture_service import default_storage_manager
+    from app.routers.cv import STORAGE_DIR as CV_STORAGE_DIR
+
+    logger = logging.getLogger("intervai.privacy")
+    user_id = current_user.id
+    logger.info("Processing complete data deletion request for user_id=%d", user_id)
+
+    # 1. Delete CV files and database rows
+    cv_docs = db.query(CVDocument).filter(CVDocument.user_id == user_id).all()
+    cv_count = len(cv_docs)
+    for doc in cv_docs:
+        if doc.file_key:
+            fpath = os.path.join(CV_STORAGE_DIR, doc.file_key)
+            if os.path.exists(fpath):
+                try:
+                    os.remove(fpath)
+                except OSError:
+                    pass
+        db.delete(doc)
+
+    # 2. Delete Interview Sessions & Media files
+    sessions = db.query(InterviewSession).filter(InterviewSession.user_id == user_id).all()
+    session_count = len(sessions)
+    for sess in sessions:
+        sid = sess.id
+        # Delete disk media
+        sess_dir = os.path.join(default_storage_manager.base_dir, str(sid))
+        if os.path.exists(sess_dir):
+            shutil.rmtree(sess_dir, ignore_errors=True)
+
+        # Delete dependent session rows
+        db.query(SessionReport).filter(SessionReport.session_id == sid).delete()
+        db.query(SessionResult).filter(SessionResult.session_id == sid).delete()
+        db.query(SessionAnalysisJob).filter(SessionAnalysisJob.session_id == sid).delete()
+        db.query(SessionCalibration).filter(SessionCalibration.session_id == sid).delete()
+        db.query(SignalTimeSeries).filter(SignalTimeSeries.session_id == sid).delete()
+        db.query(IntegrityEvent).filter(IntegrityEvent.session_id == sid).delete()
+        db.delete(sess)
+
+    # 3. Delete Profiles, Configs, Memory, History, and Consent
+    db.query(Profile).filter(Profile.user_id == user_id).delete()
+    db.query(EducationProfile).filter(EducationProfile.user_id == user_id).delete()
+    db.query(TargetProfile).filter(TargetProfile.user_id == user_id).delete()
+    db.query(InterviewConfig).filter(InterviewConfig.user_id == user_id).delete()
+    db.query(UserMemory).filter(UserMemory.user_id == user_id).delete()
+    db.query(AskedQuestion).filter(AskedQuestion.user_id == user_id).delete()
+    db.query(UserConsent).filter(UserConsent.user_id == user_id).delete()
+
+    # 4. Reset User onboarding & profile status
+    current_user.onboarding_status = "not_started"
+    current_user.name = "Candidate"
+    db.commit()
+
+    logger.info("Data deletion completed cleanly for user_id=%d", user_id)
+
+    return {
+        "status": "deleted",
+        "message": "All personal data, CVs, session recordings, and interview history have been permanently purged.",
+        "purged_records": {
+            "cv_documents_deleted": cv_count,
+            "interview_sessions_deleted": session_count,
+            "profiles_purged": True,
+            "memory_and_history_purged": True,
+        },
+    }
+
 

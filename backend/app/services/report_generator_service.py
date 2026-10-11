@@ -642,6 +642,7 @@ def generate_and_persist_report(
             rep_rec = SessionReport(
                 session_id=session_id,
                 user_id=sess.user_id,
+                is_guest=bool(sess.is_guest),
                 report_data=grounded_report,
                 is_grounded=is_grounded,
                 grounding_stats=grounding_audit,

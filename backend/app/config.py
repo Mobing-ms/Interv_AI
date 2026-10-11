@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     ORCHESTRATOR_QUESTION_TIME_SECONDS: int = 120
     ORCHESTRATOR_PRESSURE_QUESTION_TIME_SECONDS: int = 60
 
+    # Guest Practice Mode Configuration
+    GUEST_MAX_SESSIONS_PER_IP_PER_DAY: int = 3
+    GUEST_MAX_QUESTIONS: int = 3
+    GUEST_DURATION_MINUTES: int = 10
+    GUEST_MAX_STT_SECONDS: int = 600
+    GUEST_MAX_LLM_TOKENS: int = 4000
+    GUEST_MAX_UPLOAD_SIZE_BYTES: int = 2 * 1024 * 1024  # 2MB CV upload cap for guests
+    GUEST_RETENTION_HOURS: int = 24
+    TURNSTILE_SECRET_KEY: str = ""  # Cloudflare Turnstile secret key (empty or "1x0000000000000000000000000000000AA" for testing)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

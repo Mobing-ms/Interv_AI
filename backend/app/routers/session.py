@@ -26,7 +26,7 @@ from app.models import (
     InterviewSession,
     SessionCalibration,
 )
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_user_or_guest, AuthContext
 from app.schemas import (
     ConsentCreate,
     ConsentOut,
@@ -48,7 +48,7 @@ router = APIRouter(prefix="/session", tags=["session"])
 @router.post("/consent", response_model=ConsentOut, status_code=status.HTTP_201_CREATED)
 def record_consent(
     body: ConsentCreate,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
@@ -61,10 +61,15 @@ def record_consent(
             detail="Consent must be accepted to proceed with the interview.",
         )
 
+    user_id = auth_ctx.user.id if auth_ctx.user else None
+    guest_id = auth_ctx.guest_id if auth_ctx.is_guest else None
+
     consent = UserConsent(
-        user_id=current_user.id,
+        user_id=user_id,
+        is_guest=auth_ctx.is_guest,
+        guest_id=guest_id,
         version=body.version,
-        retention_days=settings.RECORDING_RETENTION_DAYS,
+        retention_days=1 if auth_ctx.is_guest else settings.RECORDING_RETENTION_DAYS,
         accepted=True,
         can_delete=True,
         accepted_at=datetime.now(timezone.utc),
@@ -77,22 +82,33 @@ def record_consent(
 
 @router.get("/consent", response_model=ConsentOut)
 def get_latest_consent(
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
-    Retrieves the user's latest recorded consent.
+    Retrieves the user's or guest's latest recorded consent.
     """
-    consent = (
-        db.query(UserConsent)
-        .filter(UserConsent.user_id == current_user.id, UserConsent.accepted == True)
-        .order_by(UserConsent.accepted_at.desc())
-        .first()
-    )
+    if auth_ctx.user:
+        consent = (
+            db.query(UserConsent)
+            .filter(UserConsent.user_id == auth_ctx.user.id, UserConsent.accepted == True)
+            .order_by(UserConsent.accepted_at.desc())
+            .first()
+        )
+    elif auth_ctx.is_guest and auth_ctx.guest_id:
+        consent = (
+            db.query(UserConsent)
+            .filter(UserConsent.guest_id == auth_ctx.guest_id, UserConsent.accepted == True)
+            .order_by(UserConsent.accepted_at.desc())
+            .first()
+        )
+    else:
+        consent = None
+
     if not consent:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No recorded consent found for this user.",
+            detail="No recorded consent found.",
         )
     return consent
 
@@ -441,26 +457,55 @@ def list_sessions(
     return {"sessions": items}
 
 
-@router.get("/{id}", response_model=SessionOut)
-def get_session(
-    id: int,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def _resolve_session(id: int, auth_ctx: AuthContext, db: Session) -> InterviewSession:
     """
-    Retrieves details for a specific interview session.
+    Validates caller permissions:
+    - Registered users can access their own sessions (session.user_id == user.id)
+    - Guests can access only their own session matching guest token (session.is_guest and session.id == guest_session_id)
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
+    if auth_ctx.is_guest:
+        if auth_ctx.guest_session_id is not None and auth_ctx.guest_session_id != id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Guest token does not permit access to this interview session.",
+            )
+        session = (
+            db.query(InterviewSession)
+            .filter(InterviewSession.id == id, InterviewSession.is_guest == True)
+            .first()
+        )
+    else:
+        user = auth_ctx.user
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required.",
+            )
+        session = (
+            db.query(InterviewSession)
+            .filter(InterviewSession.id == id, InterviewSession.user_id == user.id)
+            .first()
+        )
+
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Interview session #{id} not found.",
         )
+    return session
+
+
+@router.get("/{id}", response_model=SessionOut)
+def get_session(
+    id: int,
+    request: Request,
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieves details for a specific interview session.
+    """
+    session = _resolve_session(id, auth_ctx, db)
 
     ws_url = _build_ws_url(request, session.id, session.session_token)
     cal_out = (
@@ -490,23 +535,14 @@ def get_session(
 def record_session_calibration(
     id: int,
     body: SessionCalibrationCreate,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Stores 30-second baseline metrics for face (neutral expression, gaze center, head pose),
     voice level (average volume, pitch range), and background noise floor.
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     # Defaults for face baseline if partial or empty
     face_data = body.face_baseline or {
@@ -543,9 +579,10 @@ def record_session_calibration(
         cal.calibration_text = body.calibration_text
         cal.calibrated_at = now
     else:
+        caller_user_id = auth_ctx.user.id if auth_ctx.user else None
         cal = SessionCalibration(
             session_id=id,
-            user_id=current_user.id,
+            user_id=caller_user_id,
             face_baseline=face_data,
             voice_baseline=voice_data,
             background_noise_level_db=noise_db,
@@ -564,15 +601,16 @@ def record_session_calibration(
 @router.get("/{id}/calibration", response_model=SessionCalibrationOut)
 def get_session_calibration(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Retrieves baseline calibration metrics for a session.
     """
+    _resolve_session(id, auth_ctx, db)
     cal = (
         db.query(SessionCalibration)
-        .filter(SessionCalibration.session_id == id, SessionCalibration.user_id == current_user.id)
+        .filter(SessionCalibration.session_id == id)
         .first()
     )
     if not cal:
@@ -595,23 +633,14 @@ from app.services.session_state import default_state_store, SessionState
 @router.get("/{id}/state")
 def get_session_state(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Retrieves real-time session state from Redis (current state, question,
     elapsed time, follow-up counts, and Q/A score context).
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     state = default_state_store.load_state(id)
     if not state:
@@ -823,23 +852,14 @@ async def session_stream_websocket(
 def get_question_artifacts(
     id: int,
     question_id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Returns stored question artifacts: audio chunk count, video frame count,
     and transcript with word-level timestamps.
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
     from app.services.answer_capture_service import default_storage_manager
     return default_storage_manager.get_question_artifacts(session_id=id, question_id=question_id)
 
@@ -848,23 +868,14 @@ def get_question_artifacts(
 def get_question_signals(
     id: int,
     question_id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Returns parallel video & audio signal metrics for a question,
     including comparison against the candidate's calibration baseline.
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     # 1. Fetch calibration record
     cal_rec = db.query(SessionCalibration).filter(SessionCalibration.session_id == id).first()
@@ -946,18 +957,18 @@ def get_question_signals(
 def get_session_signals(
     id: int,
     question_id: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """Convenience endpoint returning signals for question or active question."""
     q_id = question_id if question_id is not None else 1
-    return get_question_signals(id=id, question_id=q_id, current_user=current_user, db=db)
+    return get_question_signals(id=id, question_id=q_id, auth_ctx=auth_ctx, db=db)
 
 
 @router.get("/{id}/integrity-events")
 def get_session_integrity_events(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
@@ -969,16 +980,7 @@ def get_session_integrity_events(
     - Face missing for > N seconds
     - Threshold evaluation and report flagging (without auto-terminating the interview).
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     from app.services.integrity_monitor import IntegrityMonitor
     monitor = IntegrityMonitor(session_id=id)
@@ -989,11 +991,11 @@ def get_session_integrity_events(
 @router.get("/{id}/integrity")
 def get_session_integrity_convenience(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """Convenience alias for /integrity-events."""
-    return get_session_integrity_events(id=id, current_user=current_user, db=db)
+    return get_session_integrity_events(id=id, auth_ctx=auth_ctx, db=db)
 
 
 # =============================================================================
@@ -1004,23 +1006,14 @@ def get_session_integrity_convenience(
 def finalize_and_analyze_session(
     id: int,
     sync: bool = Query(False, description="Run synchronously (useful for test suites)"),
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Finalizes recordings, updates Session status to CLOSED, stores file keys,
     and pushes an idempotent analysis job to the queue.
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     from app.services.analysis_pipeline import default_analysis_manager
     job_info = default_analysis_manager.enqueue_analysis_job(session_id=id, sync=sync)
@@ -1036,33 +1029,24 @@ def finalize_and_analyze_session(
 def close_session_alias(
     id: int,
     sync: bool = Query(False),
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """Alias for /finalize."""
-    return finalize_and_analyze_session(id=id, sync=sync, current_user=current_user, db=db)
+    return finalize_and_analyze_session(id=id, sync=sync, auth_ctx=auth_ctx, db=db)
 
 
 @router.get("/{id}/analysis-status")
 def get_session_analysis_status(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Polls real-time status of the analysis pipeline for the session:
     pending, processing, completed, partial, or failed, along with step progress.
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     from app.services.analysis_pipeline import default_analysis_manager
     status_data = default_analysis_manager.get_job_status(session_id=id)
@@ -1072,23 +1056,14 @@ def get_session_analysis_status(
 @router.get("/{id}/aligned-data")
 def get_session_aligned_data(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Returns the complete per-question aligned dataset for the session:
     transcript, word timings, face signals, speech signals, integrity events, evaluator scores.
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     from app.services.analysis_pipeline import default_alignment_engine
     aligned = default_alignment_engine.align_session(session_id=id)
@@ -1098,7 +1073,7 @@ def get_session_aligned_data(
 @router.get("/{id}/scores")
 def get_session_scores(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
@@ -1109,16 +1084,7 @@ def get_session_scores(
     - Composite Overall Score & Classification
     - Per-question factor breakdown and explanation list citing exact deductions.
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     from app.services.analysis_pipeline import default_alignment_engine
     from app.services.scoring_engine import compute_session_scores
@@ -1134,7 +1100,7 @@ def get_session_scores(
 @router.get("/{id}/result")
 def get_session_result(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
@@ -1144,16 +1110,7 @@ def get_session_result(
     - Ranked weak areas with question IDs, scores, and exact deduction evidence
     - Verified UserMemory and AskedQuestion updates.
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     from app.services.score_fusion_service import process_and_persist_session_result
     result_data = process_and_persist_session_result(session_id=id, db=db)
@@ -1163,7 +1120,7 @@ def get_session_result(
 @router.get("/{id}/report")
 def get_session_report(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
@@ -1172,66 +1129,43 @@ def get_session_report(
     - Grounding evidence references for every claim.
     - Grounding audit statistics (verified claims, regenerations, dropped claims).
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     from app.services.report_generator_service import generate_and_persist_report
     report_data = generate_and_persist_report(session_id=id, db=db)
+    if isinstance(report_data, dict):
+        report_data["is_guest"] = bool(session.is_guest)
     return report_data
 
 
 @router.post("/{id}/generate-report")
 def trigger_report_generation(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Triggers explicit 3-pass grounded report generation for the session.
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     from app.services.report_generator_service import generate_and_persist_report
     report_data = generate_and_persist_report(session_id=id, db=db)
+    if isinstance(report_data, dict):
+        report_data["is_guest"] = bool(session.is_guest)
     return report_data
 
 
 @router.get("/{id}/improvement-plan")
 def get_session_improvement_plan(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Returns 3-5 concrete action items with practice questions and curated learning resources (Phase 6.2).
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
-        )
+    session = _resolve_session(id, auth_ctx, db)
 
     from app.models import SessionResult
     from app.services.improvement_plan_service import build_improvement_plan
@@ -1253,28 +1187,26 @@ def get_session_improvement_plan(
         }
 
     plan = build_improvement_plan(res_dict)
-    return {"session_id": id, "actions": plan}
+    return {"session_id": id, "actions": plan, "is_guest": bool(session.is_guest)}
 
 
 @router.get("/{id}/pdf")
 def get_session_pdf(
     id: int,
-    current_user: User = Depends(get_current_user),
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db),
 ):
     """
     Server-side generation of publication-quality PDF report with embedded charts (Phase 6.2).
+    PDF export is forbidden for anonymous guests.
     """
-    session = (
-        db.query(InterviewSession)
-        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
-        .first()
-    )
-    if not session:
+    if auth_ctx.is_guest:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Interview session #{id} not found.",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="PDF export is reserved for registered users. Please create a free account or log in to download PDF reports.",
         )
+
+    session = _resolve_session(id, auth_ctx, db)
 
     from app.services.pdf_export_service import build_pdf_report
     try:
@@ -1292,6 +1224,106 @@ def get_session_pdf(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate PDF report: {str(e)}",
         )
+
+
+# =============================================================================
+# 6. SIGNED RECORDING URLS & RETENTION CLEANUP
+# =============================================================================
+
+@router.get("/{id}/recording-urls")
+def get_session_recording_urls(
+    id: int,
+    request: Request,
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns cryptographically signed, expiring URLs (HMAC-SHA256, 1-hour expiry)
+    for accessing the session's merged audio and video manifest.
+    Authorized strictly to the session owner.
+    """
+    session = _resolve_session(id, auth_ctx, db)
+
+    from app.services.signed_url_service import generate_signed_recording_url
+    base = f"{request.url.scheme}://{request.headers.get('host', '127.0.0.1:8000')}"
+    audio_signed = generate_signed_recording_url(id, file_type="audio", expires_in_seconds=3600, base_url=base)
+    video_signed = generate_signed_recording_url(id, file_type="video", expires_in_seconds=3600, base_url=base)
+
+    return {
+        "session_id": id,
+        "audio_url": audio_signed["url"],
+        "video_manifest_url": video_signed["url"],
+        "expires_at": audio_signed["expires_at"],
+        "retention_days": 1 if session.is_guest else settings.RECORDING_RETENTION_DAYS,
+    }
+
+
+@router.get("/{id}/recording/{file_type}")
+def get_signed_recording_file(
+    id: int,
+    file_type: str,
+    expires: int = Query(..., description="Expiry timestamp"),
+    sig: str = Query(..., description="HMAC-SHA256 signature"),
+):
+    """
+    Downloads/streams recording media file validated by expiring cryptographic signature.
+    Rejects expired or tampered requests with 403 Forbidden.
+    """
+    import os
+    from app.services.signed_url_service import verify_signed_recording_url
+    from app.services.answer_capture_service import default_storage_manager
+
+    # 1. Cryptographic signature and TTL verification
+    if not verify_signed_recording_url(id, file_type, expires_at=expires, signature=sig):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Signed recording URL is invalid, tampered, or has expired.",
+        )
+
+    sess_dir = os.path.join(default_storage_manager.base_dir, str(id))
+
+    if file_type == "audio":
+        audio_path = os.path.join(sess_dir, "audio_merged.bin")
+        if not os.path.exists(audio_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Audio recording for session #{id} not found.",
+            )
+        with open(audio_path, "rb") as f:
+            audio_bytes = f.read()
+        return Response(content=audio_bytes, media_type="audio/webm")
+
+    elif file_type in ("video", "manifest"):
+        manifest_path = os.path.join(sess_dir, "video_manifest.json")
+        if not os.path.exists(manifest_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Video manifest for session #{id} not found.",
+            )
+        with open(manifest_path, "rb") as f:
+            manifest_bytes = f.read()
+        return Response(content=manifest_bytes, media_type="application/json")
+
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported recording asset type: '{file_type}'",
+        )
+
+
+@router.post("/maintenance/cleanup-retention")
+def trigger_retention_cleanup(
+    db: Session = Depends(get_db),
+):
+    """
+    Scheduled retention maintenance task:
+    - Purges guest recordings older than 24 hours.
+    - Purges user recording media blobs older than 30 days.
+    """
+    from app.services.retention_service import cleanup_all_expired_recordings
+    result = cleanup_all_expired_recordings(db)
+    return {"status": "ok", "cleanup_summary": result}
+
 
 
 

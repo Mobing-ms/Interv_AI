@@ -60,6 +60,37 @@ import {
   Tooltip,
 } from 'recharts';
 import { Toaster, toast } from 'sonner';
+
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        id?: {
+          initialize: (config: {
+            client_id: string;
+            callback: (response: { credential?: string }) => void;
+            auto_select?: boolean;
+            cancel_on_tap_outside?: boolean;
+          }) => void;
+          renderButton: (
+            parent: HTMLElement,
+            options: {
+              type?: string;
+              theme?: string;
+              size?: string;
+              text?: string;
+              shape?: string;
+              logo_alignment?: string;
+              width?: number;
+            }
+          ) => void;
+          prompt: (notification?: (event: any) => void) => void;
+          disableAutoSelect: () => void;
+        };
+      };
+    };
+  }
+}
 import {
   api,
   API_BASE_URL,
@@ -80,6 +111,7 @@ import {
   PerQuestionFeedback,
   DashboardSummaryResponse,
   DashboardSessionItem,
+  tokenStorage,
 } from './api';
 import { AuthProvider, useAuth } from './authContext';
 import './styles.css';
@@ -93,15 +125,25 @@ const sessions = [
   { round: 'Technical', score: 72, date: 'Sep 24', time: '12 min', topic: 'System design' },
 ];
 
-function ProtectedRoute({ children, go }: { children: React.ReactNode; go: (p: string) => void }) {
+function ProtectedRoute({
+  children,
+  go,
+  allowGuest = false,
+}: {
+  children: React.ReactNode;
+  go: (p: string) => void;
+  allowGuest?: boolean;
+}) {
   const { user, isLoading } = useAuth();
+  const guestSessionId = tokenStorage.getGuestSessionId();
+  const isGuestAllowed = allowGuest && !!guestSessionId;
 
   useEffect(() => {
-    if (!isLoading && !user) {
+    if (!isLoading && !user && !isGuestAllowed) {
       toast.error('Please log in to continue');
       go('/login');
     }
-  }, [isLoading, user, go]);
+  }, [isLoading, user, isGuestAllowed, go]);
 
   if (isLoading) {
     return (
@@ -111,7 +153,7 @@ function ProtectedRoute({ children, go }: { children: React.ReactNode; go: (p: s
     );
   }
 
-  if (!user) {
+  if (!user && !isGuestAllowed) {
     return null;
   }
 
@@ -146,6 +188,8 @@ function App() {
         >
           {path === '/' ? (
             <Landing go={go} />
+          ) : path === '/guest/setup' ? (
+            <GuestSetup go={go} />
           ) : path === '/login' || path === '/signup' ? (
             <Auth go={go} signup={path === '/signup'} />
           ) : path === '/onboarding' ? (
@@ -161,19 +205,19 @@ function App() {
               <Setup go={go} />
             </ProtectedRoute>
           ) : path === '/interview/precheck' ? (
-            <ProtectedRoute go={go}>
+            <ProtectedRoute go={go} allowGuest>
               <Precheck go={go} />
             </ProtectedRoute>
           ) : path.startsWith('/interview/live') ? (
-            <ProtectedRoute go={go}>
+            <ProtectedRoute go={go} allowGuest>
               <Live go={go} />
             </ProtectedRoute>
           ) : path.startsWith('/interview/processing') ? (
-            <ProtectedRoute go={go}>
+            <ProtectedRoute go={go} allowGuest>
               <Processing go={go} />
             </ProtectedRoute>
           ) : path.startsWith('/report') ? (
-            <ProtectedRoute go={go}>
+            <ProtectedRoute go={go} allowGuest>
               <Report go={go} path={path} />
             </ProtectedRoute>
           ) : path === '/history' ? (
@@ -203,7 +247,9 @@ function Shell({ children, go }: { children: React.ReactNode; go: (p: string) =>
         .join('')
         .slice(0, 2)
         .toUpperCase()
-    : 'AK';
+    : user?.email
+    ? user.email.slice(0, 2).toUpperCase()
+    : 'ME';
 
   return (
     <div className="shell">
@@ -214,14 +260,40 @@ function Shell({ children, go }: { children: React.ReactNode; go: (p: string) =>
           </span>
           interv<span>ai</span>
         </button>
-        <nav className="nav-links">
-          <button onClick={() => go('/dashboard')}>Dashboard</button>
-          <button onClick={() => go('/history')}>History</button>
-          <button onClick={() => go('/settings')}>Settings</button>
-        </nav>
-        <button className="avatar" onClick={() => go('/settings')}>
-          {initials}
-        </button>
+        {user ? (
+          <>
+            <nav className="nav-links">
+              <button onClick={() => go('/dashboard')}>Dashboard</button>
+              <button onClick={() => go('/history')}>History</button>
+              <button onClick={() => go('/settings')}>Settings</button>
+            </nav>
+            <button className="avatar" onClick={() => go('/settings')}>
+              {initials}
+            </button>
+          </>
+        ) : (
+          <div className="nav-actions" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span
+              style={{
+                fontSize: '11px',
+                color: '#60a5fa',
+                background: 'rgba(59, 130, 246, 0.1)',
+                border: '1px solid rgba(59, 130, 246, 0.25)',
+                padding: '4px 10px',
+                borderRadius: '12px',
+                fontFamily: 'DM Mono, monospace',
+                letterSpacing: '0.05em',
+                textTransform: 'uppercase',
+              }}
+            >
+              Guest Practice
+            </span>
+            <button className="text-button" onClick={() => go('/login')} style={{ fontSize: '13px' }}>
+              Log in
+            </button>
+            <Pill onClick={() => go('/signup')}>Sign up</Pill>
+          </div>
+        )}
       </header>
       {children}
     </div>
@@ -270,6 +342,9 @@ function Landing({ go }: { go: (p: string) => void }) {
           <a href="#faq">FAQ</a>
         </nav>
         <div className="nav-actions">
+          <button className="text-button" onClick={() => go('/guest/setup')}>
+            Just practice
+          </button>
           <button className="text-button" onClick={() => go('/login')}>
             Log in
           </button>
@@ -289,8 +364,26 @@ function Landing({ go }: { go: (p: string) => void }) {
             <p>
               Practice the conversations that move your career forward. IntervAI gives you signal-rich feedback on what you say, how you say it, and how you show up.
             </p>
-            <div className="hero-actions">
+            <div className="hero-actions" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
               <Pill onClick={() => go('/signup')}>Start practising</Pill>
+              <button
+                type="button"
+                className="pill pill-secondary"
+                onClick={() => go('/guest/setup')}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  border: '1px solid rgba(255, 255, 255, 0.18)',
+                  color: 'var(--text-strong, #ffffff)',
+                  cursor: 'pointer',
+                  padding: '9px 18px',
+                  borderRadius: '999px',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                Just practice
+              </button>
               <button className="link-button" onClick={() => document.getElementById('how')?.scrollIntoView({ behavior: 'smooth' })}>
                 <Play /> See how it works
               </button>
@@ -555,22 +648,23 @@ function Auth({ go, signup }: { go: (p: string) => void; signup: boolean }) {
     }
   };
 
-  const handleGoogleAuth = async () => {
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+  const googleButtonRef = useRef<HTMLDivElement>(null);
+
+  const handleCredentialResponse = async (response: { credential?: string }) => {
+    if (!response?.credential) {
+      toast.error('No credential received from Google');
+      return;
+    }
+
     setFieldErrors({});
     setNetworkError('');
     setIsGoogleLoading(true);
 
     try {
-      const googleEmail = email.trim() || 'alex.kumar.google@gmail.com';
-      const googleName = name.trim() || (googleEmail.toLowerCase().includes('alex') ? 'Alex Kumar' : googleEmail.split('@')[0]);
-
-      const data = await api.googleAuth({
-        email: googleEmail,
-        name: googleName,
-        token: 'google-oauth-token',
-      });
+      const data = await api.googleAuth({ credential: response.credential });
       setUser(data.user);
-      toast.success('Signed in with Google');
+      toast.success(`Welcome, ${data.user.name || 'Candidate'}!`);
       if (data.user.onboarding_status && data.user.onboarding_status !== 'profile_confirmed') {
         go('/onboarding');
       } else {
@@ -580,10 +674,83 @@ function Auth({ go, signup }: { go: (p: string) => void; signup: boolean }) {
       if (err instanceof ApiError && err.isNetworkError) {
         setNetworkError('Network error: Unable to connect to server');
       } else {
-        setNetworkError(err.detail || 'Failed to sign in with Google');
+        const detail = err.detail || 'Failed to sign in with Google';
+        setNetworkError(detail);
+        toast.error(detail);
       }
     } finally {
       setIsGoogleLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!googleClientId) {
+      return;
+    }
+
+    let intervalId: any = null;
+
+    const setupGsi = () => {
+      if (window.google?.accounts?.id && googleButtonRef.current) {
+        try {
+          window.google.accounts.id.initialize({
+            client_id: googleClientId,
+            callback: handleCredentialResponse,
+            auto_select: false,
+            cancel_on_tap_outside: true,
+          });
+
+          googleButtonRef.current.innerHTML = '';
+          window.google.accounts.id.renderButton(googleButtonRef.current, {
+            type: 'standard',
+            theme: 'outline',
+            size: 'large',
+            text: 'continue_with',
+            shape: 'pill',
+            width: 380,
+          });
+
+          // Trigger One Tap prompt if eligible
+          window.google.accounts.id.prompt();
+          return true;
+        } catch (e) {
+          console.warn('Google Identity Services setup warning:', e);
+        }
+      }
+      return false;
+    };
+
+    if (!setupGsi()) {
+      intervalId = setInterval(() => {
+        if (setupGsi()) {
+          clearInterval(intervalId);
+        }
+      }, 300);
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [googleClientId, signup]);
+
+  const handleGoogleAuth = async () => {
+    setFieldErrors({});
+    setNetworkError('');
+
+    if (!googleClientId) {
+      toast.error('Google Client ID is not configured. Please add VITE_GOOGLE_CLIENT_ID to your frontend .env file.');
+      return;
+    }
+
+    if (!window.google?.accounts?.id) {
+      toast.error('Google Sign-In is still loading. Please wait a moment and try again.');
+      return;
+    }
+
+    try {
+      window.google.accounts.id.prompt();
+    } catch (err) {
+      console.warn('Google prompt warning:', err);
     }
   };
 
@@ -687,13 +854,34 @@ function Auth({ go, signup }: { go: (p: string) => void; signup: boolean }) {
           {isLoading ? (signup ? 'Creating account...' : 'Logging in...') : signup ? 'Create account' : 'Log in'}
         </Pill>
 
-        <button
-          className={`google ${isGoogleLoading ? 'btn-disabled' : ''}`}
-          onClick={handleGoogleAuth}
-          disabled={isLoading || isGoogleLoading}
-        >
-          {isGoogleLoading ? 'Connecting to Google...' : 'Continue with Google'}
-        </button>
+        <div style={{ position: 'relative', width: '100%', marginTop: 12 }}>
+          <button
+            type="button"
+            className={`google ${isGoogleLoading ? 'btn-disabled' : ''}`}
+            onClick={handleGoogleAuth}
+            disabled={isLoading || isGoogleLoading}
+            style={{ width: '100%', margin: 0 }}
+          >
+            {isGoogleLoading ? 'Connecting to Google...' : 'Continue with Google'}
+          </button>
+
+          {googleClientId && (
+            <div
+              ref={googleButtonRef}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+                opacity: 0.001,
+                overflow: 'hidden',
+                cursor: 'pointer',
+                zIndex: 5,
+              }}
+            />
+          )}
+        </div>
 
         {!signup && (
           <button className="forgot" onClick={() => toast.success('Reset link sent — check your inbox')}>
@@ -2114,7 +2302,8 @@ function Onboarding({ go }: { go: (p: string) => void }) {
 
 function Dashboard({ go }: { go: (p: string) => void }) {
   const { user } = useAuth();
-  const userName = user?.name || 'Alex';
+  const userName = user?.name?.trim() || user?.email?.split('@')[0] || 'Candidate';
+  const userEmail = user?.email || '';
   const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
@@ -2187,7 +2376,15 @@ function Dashboard({ go }: { go: (p: string) => void }) {
             <h1>
               Good day, <em>{userName}.</em>
             </h1>
-            <p>Every rep sharpens your delivery and cements your domain knowledge.</p>
+            <p>
+              {userEmail ? (
+                <>
+                  Signed in as <strong style={{ color: 'var(--text-strong, #ffffff)' }}>{userEmail}</strong>. Every rep sharpens your delivery and cements your domain knowledge.
+                </>
+              ) : (
+                'Every rep sharpens your delivery and cements your domain knowledge.'
+              )}
+            </p>
           </div>
           <Pill onClick={() => go('/interview/setup')}>Start new interview</Pill>
         </div>
@@ -2679,6 +2876,401 @@ function Setup({ go }: { go: (p: string) => void }) {
   );
 }
 
+function GuestSetup({ go }: { go: (p: string) => void }) {
+  const [selectedRole, setSelectedRole] = useState('Software Engineer');
+  const [customRole, setCustomRole] = useState('');
+  const [roundType, setRoundType] = useState<Round>('Technical');
+  const [difficulty, setDifficulty] = useState<string>('Medium');
+
+  // Optional CV Upload
+  const [cvFile, setCvFile] = useState<File | null>(null);
+  const [cvDocumentId, setCvDocumentId] = useState<number | null>(null);
+  const [cvText, setCvText] = useState<string>('');
+  const [uploadingCv, setUploadingCv] = useState(false);
+  const [uploadError, setUploadError] = useState<string>('');
+
+  // Human Verification / Turnstile
+  const [captchaVerified, setCaptchaVerified] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState('mock_turnstile_token');
+
+  // Privacy & Retention Consent
+  const [privacyAgreed, setPrivacyAgreed] = useState(true);
+
+  // Loading state
+  const [starting, setStarting] = useState(false);
+
+  const roleSuggestions = [
+    'Software Engineer',
+    'Frontend Developer',
+    'Backend Engineer',
+    'Data Scientist',
+    'Product Manager',
+    'Engineering Manager',
+  ];
+
+  const effectiveRole = customRole.trim() || selectedRole;
+
+  const handleCvChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    setUploadError('');
+    if (!e.target.files || e.target.files.length === 0) return;
+    const file = e.target.files[0];
+
+    // Strictly enforce 2MB limit for guests
+    const maxBytes = 2 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      setUploadError(`CV file exceeds the 2MB guest limit (${(file.size / (1024 * 1024)).toFixed(1)} MB).`);
+      toast.error('File size exceeds the 2MB guest limit.');
+      return;
+    }
+
+    setCvFile(file);
+    setUploadingCv(true);
+    try {
+      const resp = await api.uploadGuestCv(file);
+      setCvDocumentId(resp.cv_document_id);
+      setCvText(resp.raw_text_snippet || '');
+      toast.success(`CV attached (${file.name})! Personalized questions will be generated.`);
+    } catch (err: any) {
+      setUploadError(err.detail || 'Failed to upload CV');
+      toast.error(err.detail || 'Failed to upload CV');
+      setCvFile(null);
+    } finally {
+      setUploadingCv(false);
+    }
+  };
+
+  const handleStartGuestSession = async () => {
+    if (!privacyAgreed) {
+      toast.error('Please accept the 24-hour privacy and retention terms.');
+      return;
+    }
+    if (!captchaVerified) {
+      toast.error('Please complete human verification (Turnstile CAPTCHA).');
+      return;
+    }
+
+    setStarting(true);
+    try {
+      const data = await api.startGuestSession({
+        target_role: effectiveRole,
+        round_type: roundType,
+        difficulty,
+        cv_document_id: cvDocumentId || undefined,
+        cv_text: cvText,
+        turnstile_token: captchaToken,
+      });
+
+      toast.success('Guest practice session ready! (3 questions · 10 minutes)');
+      go('/interview/precheck');
+    } catch (err: any) {
+      toast.error(err.detail || 'Could not start guest practice session.');
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  return (
+    <Shell go={go}>
+      <main className="app-main narrow">
+        <div className="page-intro">
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+              <span className="eyebrow">NO-LOGIN PRACTICE MODE</span>
+              <span className="returning-badge new">
+                ⚡ Anonymous · Instant Access · 24h Purge
+              </span>
+            </div>
+            <h1>
+              Jump right into <em>practice.</em>
+            </h1>
+            <p>
+              Experience a full 8–10 minute AI interview with real-time audio, video proctoring, and comprehensive grounded feedback. No account or password required.
+            </p>
+          </div>
+        </div>
+
+        <div className="setup-layout">
+          <div>
+            {/* 1. Target Role */}
+            <div className="settings-card" style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', marginBottom: 8, fontWeight: 600, color: '#f1f5f9' }}>
+                Target Role
+              </label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+                {roleSuggestions.map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => {
+                      setSelectedRole(r);
+                      setCustomRole('');
+                    }}
+                    style={{
+                      background: selectedRole === r && !customRole ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.04)',
+                      border: selectedRole === r && !customRole ? '1px solid #3b82f6' : '1px solid rgba(255, 255, 255, 0.1)',
+                      color: selectedRole === r && !customRole ? '#60a5fa' : '#cbd5e1',
+                      borderRadius: 20,
+                      padding: '6px 14px',
+                      fontSize: 12,
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="text"
+                placeholder="Or type a custom role (e.g. Cloud Security Architect)..."
+                value={customRole}
+                onChange={(e) => setCustomRole(e.target.value)}
+                style={{
+                  width: '100%',
+                  background: '#0f172a',
+                  border: '1px solid rgba(255, 255, 255, 0.12)',
+                  borderRadius: 8,
+                  padding: '10px 14px',
+                  color: '#fff',
+                  fontSize: 13,
+                }}
+              />
+            </div>
+
+            {/* 2. Round Type */}
+            <h3 style={{ marginTop: 24 }}>Interview round</h3>
+            <div className="round-select" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+              {(['Technical', 'HR', 'Managerial'] as Round[]).map((r) => (
+                <button
+                  key={r}
+                  className={roundType === r ? 'selected' : ''}
+                  onClick={() => setRoundType(r)}
+                >
+                  <span>{r === 'Technical' ? '⌘' : r === 'HR' ? '◌' : '◈'}</span>
+                  <strong>{r}</strong>
+                  <small>
+                    {r === 'Technical'
+                      ? 'Problem solving & engineering'
+                      : r === 'HR'
+                      ? 'Culture, storytelling & fit'
+                      : 'Leadership & scenario judgment'}
+                  </small>
+                </button>
+              ))}
+            </div>
+
+            {/* 3. Difficulty */}
+            <div className="settings-card" style={{ marginTop: 20 }}>
+              <label style={{ display: 'block', marginBottom: 8, fontWeight: 600, color: '#f1f5f9' }}>
+                Difficulty Level
+              </label>
+              <div style={{ display: 'flex', gap: 10 }}>
+                {['Easy', 'Medium', 'Hard'].map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setDifficulty(d)}
+                    style={{
+                      flex: 1,
+                      background: difficulty === d ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.04)',
+                      border: difficulty === d ? '1px solid #3b82f6' : '1px solid rgba(255, 255, 255, 0.1)',
+                      color: difficulty === d ? '#60a5fa' : '#cbd5e1',
+                      borderRadius: 8,
+                      padding: '10px',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 4. Optional CV Upload (2MB limit) */}
+            <div className="settings-card" style={{ marginTop: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <label style={{ fontWeight: 600, color: '#f1f5f9', margin: 0 }}>
+                  Upload CV (Optional)
+                </label>
+                <span style={{ fontSize: 11, color: '#94a3b8' }}>Max 2MB · PDF, DOCX, TXT</span>
+              </div>
+              <p style={{ fontSize: 12, color: '#94a3b8', margin: '0 0 12px' }}>
+                Provide your resume to get questions tailored specifically to your background and projects.
+              </p>
+
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                  padding: '16px',
+                  border: '1px dashed rgba(255, 255, 255, 0.2)',
+                  borderRadius: 10,
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  cursor: 'pointer',
+                  color: '#cbd5e1',
+                  fontSize: 13,
+                }}
+              >
+                <FileText style={{ width: 18, height: 18, color: '#60a5fa' }} />
+                <span>
+                  {uploadingCv
+                    ? 'Extracting CV text...'
+                    : cvFile
+                    ? `${cvFile.name} (${(cvFile.size / 1024).toFixed(0)} KB)`
+                    : 'Click to choose CV file'}
+                </span>
+                <input
+                  type="file"
+                  accept=".pdf,.docx,.txt"
+                  onChange={handleCvChange}
+                  disabled={uploadingCv}
+                  style={{ display: 'none' }}
+                />
+              </label>
+
+              {uploadError && (
+                <div style={{ color: '#f87171', fontSize: 12, marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <AlertCircle style={{ width: 14 }} />
+                  {uploadError}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <aside className="setup-sidebar">
+            <div className="summary-card">
+              <h4>Practice Room Blueprint</h4>
+              <ul>
+                <li>
+                  <span>Format</span>
+                  <strong>Shorter Mock ({roundType})</strong>
+                </li>
+                <li>
+                  <span>Role Target</span>
+                  <strong>{effectiveRole}</strong>
+                </li>
+                <li>
+                  <span>Question Count</span>
+                  <strong>3 Questions</strong>
+                </li>
+                <li>
+                  <span>Estimated Time</span>
+                  <strong>8 – 10 minutes</strong>
+                </li>
+                <li>
+                  <span>Multimodal Signal</span>
+                  <strong>Audio + Camera + Pacing</strong>
+                </li>
+                <li>
+                  <span>Scoring Engine</span>
+                  <strong>Identical to Full Suite</strong>
+                </li>
+              </ul>
+            </div>
+
+            {/* Cloudflare Turnstile CAPTCHA Box */}
+            <div
+              style={{
+                background: 'rgba(15, 23, 42, 0.8)',
+                border: '1px solid rgba(59, 130, 246, 0.25)',
+                borderRadius: 12,
+                padding: '16px',
+                marginTop: 20,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <span className="eyebrow" style={{ color: '#60a5fa', fontSize: 10 }}>
+                  ABUSE PROTECTION
+                </span>
+                <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'DM Mono, monospace' }}>
+                  Cloudflare Turnstile
+                </span>
+              </div>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  color: '#e2e8f0',
+                  userSelect: 'none',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={captchaVerified}
+                  onChange={(e) => {
+                    setCaptchaVerified(e.target.checked);
+                    if (e.target.checked) {
+                      setCaptchaToken('mock_turnstile_token');
+                    }
+                  }}
+                  style={{ width: 18, height: 18, accentColor: '#3b82f6', cursor: 'pointer' }}
+                />
+                <span>I am a human candidate</span>
+                <ShieldCheck style={{ width: 16, height: 16, color: captchaVerified ? '#34d399' : '#64748b', marginLeft: 'auto' }} />
+              </label>
+            </div>
+
+            {/* 24-Hour Privacy Notice */}
+            <div
+              style={{
+                background: 'rgba(234, 179, 8, 0.05)',
+                border: '1px solid rgba(234, 179, 8, 0.2)',
+                borderRadius: 12,
+                padding: '14px 16px',
+                marginTop: 16,
+              }}
+            >
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                <Clock3 style={{ width: 16, height: 16, color: '#fbbf24', flexShrink: 0, marginTop: 2 }} />
+                <div>
+                  <strong style={{ display: 'block', fontSize: 12, color: '#fef08a', marginBottom: 2 }}>
+                    24-Hour Auto-Purge Policy
+                  </strong>
+                  <p style={{ margin: 0, fontSize: 11.5, color: '#94a3b8', lineHeight: 1.45 }}>
+                    Your guest recordings, answers, and analysis data are automatically deleted after 24 hours. You can link your report anytime by creating a free account.
+                  </p>
+                </div>
+              </div>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  color: '#cbd5e1',
+                  marginTop: 12,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={privacyAgreed}
+                  onChange={(e) => setPrivacyAgreed(e.target.checked)}
+                  style={{ width: 16, height: 16, accentColor: '#3b82f6' }}
+                />
+                I agree to the practice terms & 24h retention policy.
+              </label>
+            </div>
+
+            <div style={{ marginTop: 20 }}>
+              <Pill disabled={starting || !privacyAgreed || !captchaVerified} onClick={handleStartGuestSession}>
+                {starting ? 'Preparing room...' : 'Start practice interview'}
+              </Pill>
+            </div>
+          </aside>
+        </div>
+      </main>
+    </Shell>
+  );
+}
+
 function Precheck({ go }: { go: (p: string) => void }) {
   // Step navigation: 'consent' -> 'devices' -> 'calibration' -> 'connecting'
   const [step, setStep] = useState<'consent' | 'devices' | 'calibration' | 'connecting'>('consent');
@@ -2728,9 +3320,17 @@ function Precheck({ go }: { go: (p: string) => void }) {
 
   const isConsentFullyAccepted = consentRecording && consentAnalysis && consentRetention;
 
+  const isGuestMode = !!tokenStorage.getGuestSessionId();
+
   // Check for prior recorded consent on mount
   useEffect(() => {
     let mounted = true;
+    if (isGuestMode) {
+      setConsentRecording(true);
+      setConsentAnalysis(true);
+      setConsentRetention(true);
+      return;
+    }
     api
       .getLatestConsent()
       .then((c) => {
@@ -2747,7 +3347,7 @@ function Precheck({ go }: { go: (p: string) => void }) {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [isGuestMode]);
 
   // Cleanup media stream and audio context on unmount
   useEffect(() => {
@@ -2789,7 +3389,12 @@ function Precheck({ go }: { go: (p: string) => void }) {
       // Automatically trigger device check when entering devices stage
       startDeviceCheck();
     } catch (err: any) {
-      toast.error(err.detail || 'Failed to record consent record');
+      if (isGuestMode) {
+        setStep('devices');
+        startDeviceCheck();
+      } else {
+        toast.error(err.detail || 'Failed to record consent record');
+      }
     } finally {
       setSavingConsent(false);
     }
@@ -2951,7 +3556,7 @@ function Precheck({ go }: { go: (p: string) => void }) {
 
   const handleStartCalibration = () => {
     setCalibrationActive(true);
-    setCalibrationTimeLeft(30);
+    setCalibrationTimeLeft(isGuestMode ? 15 : 30);
     setSamplesGathered(0);
   };
 
@@ -2979,23 +3584,28 @@ function Precheck({ go }: { go: (p: string) => void }) {
       };
       setCalibratedData(baselinePayload);
 
-      // 2. Fetch latest InterviewConfig ID
-      let cfgId: number | undefined = undefined;
-      try {
-        const latestCfg = await api.getLatestInterviewConfig();
-        if (latestCfg) cfgId = latestCfg.id;
-      } catch (e) {
-        // Fallback to auto-created config
-      }
+      // 2. Fetch session (use existing guest session if in guest mode, else create new)
+      let newSession: InterviewSession;
+      const guestSessionId = tokenStorage.getGuestSessionId();
 
-      // 3. Create Session in DB (Enforces Consent)
-      const newSession = await api.createSession(cfgId);
+      if (guestSessionId) {
+        newSession = await api.getSession(guestSessionId);
+      } else {
+        let cfgId: number | undefined = undefined;
+        try {
+          const latestCfg = await api.getLatestInterviewConfig();
+          if (latestCfg) cfgId = latestCfg.id;
+        } catch (e) {
+          // Fallback to auto-created config
+        }
+        newSession = await api.createSession(cfgId);
+      }
       setSession(newSession);
 
-      // 4. Save Calibration Baseline
+      // 3. Save Calibration Baseline
       await api.saveCalibration(newSession.id, baselinePayload);
 
-      // 5. Open WebSocket and initiate MediaRecorder chunk streaming
+      // 4. Open WebSocket and initiate MediaRecorder chunk streaming
       toast.success('System calibrated. Connecting to live interview stream...');
       await connectWebSocketStream(newSession);
     } catch (err: any) {
@@ -3081,6 +3691,8 @@ function Precheck({ go }: { go: (p: string) => void }) {
                 ? 'STEP 1 / 3 · PRIVACY & CONSENT'
                 : step === 'devices'
                 ? 'STEP 2 / 3 · SYSTEM & DEVICE CHECK'
+                : isGuestMode
+                ? 'STEP 3 / 3 · 15-SECOND CALIBRATION'
                 : 'STEP 3 / 3 · 30-SECOND CALIBRATION'}
             </span>
             <h1>
@@ -3115,7 +3727,7 @@ function Precheck({ go }: { go: (p: string) => void }) {
           <div className="card-section" style={{ maxWidth: '820px', margin: '0 auto' }}>
             <h3>
               <span>Candidate Consent Agreement</span>
-              <span className="eyebrow">VERSION 1.0</span>
+              <span className="eyebrow">{isGuestMode ? 'GUEST PRACTICE · 24H RETENTION' : 'VERSION 1.0'}</span>
             </h3>
 
             <div className="consent-box">
@@ -3142,9 +3754,11 @@ function Precheck({ go }: { go: (p: string) => void }) {
               <div className="consent-item">
                 <LockKeyhole style={{ width: '22px', height: '22px' }} />
                 <div>
-                  <strong>Configurable 30-Day Retention & Right to Delete</strong>
+                  <strong>{isGuestMode ? 'Automated 24-Hour Purge Policy' : 'Configurable 30-Day Retention & Right to Delete'}</strong>
                   <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '12px' }}>
-                    Your recordings and analysis reports are retained securely for 30 days. You hold full ownership and can permanently delete all video, audio, and report data at any time from your settings.
+                    {isGuestMode
+                      ? 'Guest interview recordings, audio streams, and transcripts are strictly temporary and permanently purged after 24 hours. Create a free account anytime to link and save reports.'
+                      : 'Your recordings and analysis reports are retained securely for 30 days. You hold full ownership and can permanently delete all video, audio, and report data at any time from your settings.'}
                   </p>
                 </div>
               </div>
@@ -3178,7 +3792,9 @@ function Precheck({ go }: { go: (p: string) => void }) {
                   onChange={(e) => setConsentRetention(e.target.checked)}
                   style={{ width: '18px', height: '18px', accentColor: '#3b82f6' }}
                 />
-                I acknowledge the 30-day retention policy and understand I can delete my data at any time.
+                {isGuestMode
+                  ? 'I acknowledge that guest recordings and transcripts are permanently deleted after 24 hours.'
+                  : 'I acknowledge the 30-day retention policy and understand I can delete my data at any time.'}
               </label>
             </div>
 
@@ -3816,80 +4432,116 @@ function Live({ go }: { go: (p: string) => void }) {
     const wsHost = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
     const wsUrl = `${wsProto}//${wsHost}/session/${sessionId}/live?token=${token}`;
 
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    let isCleaningUp = false;
+    let reconnectTimeout: any = null;
+    let reconnectAttempts = 0;
+    let hasConnectedOnce = false;
 
-    ws.onopen = () => {
-      setWsConnected(true);
-      ws.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
-    };
+    const connectWebSocket = () => {
+      if (isCleaningUp) return;
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'connected') {
-          // Connected
-        } else if (msg.type === 'avatar_speak') {
-          setSubtitles(msg.text);
-          playSpeech(msg.text, msg.audio_url, msg.language);
-        } else if (msg.type === 'question') {
-          setCurrentQuestion(msg);
-          setTimerSeconds(msg.time_limit || 120);
-          setQuestionIndex((prev) => (msg.id > 1 ? prev + 1 : 1));
-          setLiveTranscript('');
-        } else if (msg.type === 'timer_started') {
-          setTimerSeconds(msg.time_limit || 120);
-          setTimerActive(true);
-          setAvatarState('listening');
-          setLiveTranscript('');
-          startRecordingStreams();
-          toast.info('Answer timer started. Streaming audio & video.');
-        } else if (msg.type === 'transcript_update') {
-          setLiveTranscript(msg.text);
-        } else if (msg.type === 'nudge') {
-          setSubtitles(msg.text);
-          toast.warning(`Interviewer gentle nudge: ${msg.text}`, { duration: 6000 });
-        } else if (msg.type === 'redirect') {
-          setSubtitles(msg.text);
-          toast.warning(`Interviewer redirect: ${msg.text}`);
-        } else if (msg.type === 'answer_complete') {
-          stopRecordingStreams();
-          setTimerActive(false);
-          setAvatarState('thinking');
-          if (msg.finish_reason === 'vad_silence') {
-            toast.success('Voice activity ended (silence detected) — answer submitted automatically!');
-            setSubtitles('Answer captured automatically via VAD silence detection. Evaluating response...');
-          } else {
-            setSubtitles('Answer received. Evaluating response and routing next question...');
-          }
-        } else if (msg.type === 'integrity_warning') {
-          toast.warning(msg.message || 'Please remain facing the camera in full view and keep this window active.', {
-            duration: 7000,
-          });
-        } else if (msg.type === 'round_end') {
-          stopRecordingStreams();
-          setTimerActive(false);
-          setAvatarState('idle');
-          toast.success('Interview completed cleanly! Compiling report...');
-          setTimeout(() => go(`/interview/processing/${sessionId}`), 2000);
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsConnected(true);
+        if (hasConnectedOnce) {
+          toast.success('Reconnected to live interview stream! Resuming question.');
         }
-      } catch (err) {
-        console.warn('WS message parsing error:', err);
-      }
+        hasConnectedOnce = true;
+        reconnectAttempts = 0;
+        ws.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'connected') {
+            // Connected
+          } else if (msg.type === 'avatar_speak') {
+            setSubtitles(msg.text);
+            playSpeech(msg.text, msg.audio_url, msg.language);
+          } else if (msg.type === 'question') {
+            setCurrentQuestion(msg);
+            setTimerSeconds(msg.time_limit || 120);
+            setQuestionIndex((prev) => (msg.id > 1 ? prev + 1 : 1));
+            setLiveTranscript('');
+          } else if (msg.type === 'timer_started') {
+            setTimerSeconds(msg.time_limit || 120);
+            setTimerActive(true);
+            setAvatarState('listening');
+            setLiveTranscript('');
+            startRecordingStreams();
+            toast.info('Answer timer started. Streaming audio & video.');
+          } else if (msg.type === 'transcript_update') {
+            setLiveTranscript(msg.text);
+          } else if (msg.type === 'nudge') {
+            setSubtitles(msg.text);
+            toast.warning(`Interviewer gentle nudge: ${msg.text}`, { duration: 6000 });
+          } else if (msg.type === 'redirect') {
+            setSubtitles(msg.text);
+            toast.warning(`Interviewer redirect: ${msg.text}`);
+          } else if (msg.type === 'answer_complete') {
+            stopRecordingStreams();
+            setTimerActive(false);
+            setAvatarState('thinking');
+            if (msg.finish_reason === 'vad_silence') {
+              toast.success('Voice activity ended (silence detected) — answer submitted automatically!');
+              setSubtitles('Answer captured automatically via VAD silence detection. Evaluating response...');
+            } else {
+              setSubtitles('Answer received. Evaluating response and routing next question...');
+            }
+          } else if (msg.type === 'integrity_warning') {
+            toast.warning(msg.message || 'Please remain facing the camera in full view and keep this window active.', {
+              duration: 7000,
+            });
+          } else if (msg.type === 'round_end') {
+            stopRecordingStreams();
+            setTimerActive(false);
+            setAvatarState('idle');
+            toast.success('Interview completed cleanly! Compiling report...');
+            setTimeout(() => go(`/interview/processing/${sessionId}`), 2000);
+          }
+        } catch (err) {
+          console.warn('WS message parsing error:', err);
+        }
+      };
+
+      ws.onerror = (e) => {
+        console.warn('WebSocket stream error:', e);
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        if (!isCleaningUp) {
+          reconnectAttempts += 1;
+          const delay = Math.min(10000, 2000 * Math.pow(1.5, reconnectAttempts - 1));
+          toast.warning(`Live stream disconnected. Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})...`, {
+            duration: 3500,
+          });
+          reconnectTimeout = setTimeout(() => {
+            if (!isCleaningUp) {
+              connectWebSocket();
+            }
+          }, delay);
+        }
+      };
     };
 
-    ws.onerror = (e) => {
-      console.warn('WebSocket stream error:', e);
-    };
+    connectWebSocket();
 
     // Heartbeat loop every 15s
     const hbInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
       }
     }, 15000);
 
     return () => {
+      isCleaningUp = true;
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
       clearInterval(hbInterval);
       stopRecordingStreams();
       if (mediaStreamRef.current) {
@@ -3901,8 +4553,8 @@ function Live({ go }: { go: (p: string) => void }) {
       if (typeof window !== 'undefined' && 'speechSynthesis' in window && window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close();
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close();
       }
     };
   }, [sessionId]);
@@ -4323,6 +4975,7 @@ function Processing({ go }: { go: (p: string) => void }) {
 }
 
 function Report({ go, path }: { go: (p: string) => void; path?: string }) {
+  const { user } = useAuth();
   const [open, setOpen] = useState(0);
   const [loading, setLoading] = useState(true);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
@@ -4332,6 +4985,8 @@ function Report({ go, path }: { go: (p: string) => void; path?: string }) {
   // Extract session ID from URL path or fallback to 1
   const rawId = path ? path.replace('/report', '').replace('/', '') : '';
   const sessionId = parseInt(rawId, 10) || 1;
+
+  const isGuest = !user || Boolean(reportData?.is_guest) || (tokenStorage.getGuestSessionId() === sessionId);
 
   useEffect(() => {
     let isMounted = true;
@@ -4375,6 +5030,10 @@ function Report({ go, path }: { go: (p: string) => void; path?: string }) {
   }, [sessionId]);
 
   const handleDownloadPdf = async () => {
+    if (isGuest) {
+      toast.error('PDF export is reserved for registered users. Please create a free account or log in to download.');
+      return;
+    }
     try {
       setDownloadingPdf(true);
       toast.info('Generating PDF report with high-res charts...');
@@ -4478,6 +5137,63 @@ function Report({ go, path }: { go: (p: string) => void; path?: string }) {
   return (
     <Shell go={go}>
       <main className="app-main">
+        {/* ================================================================= */}
+        {/* GUEST BANNER                                                      */}
+        {/* ================================================================= */}
+        {isGuest && (
+          <div
+            style={{
+              background: 'linear-gradient(90deg, rgba(59, 130, 246, 0.12), rgba(99, 102, 241, 0.12))',
+              border: '1px solid rgba(96, 165, 250, 0.35)',
+              borderRadius: 14,
+              padding: '16px 22px',
+              marginBottom: 24,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 16,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 19,
+                  background: 'rgba(59, 130, 246, 0.2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#60a5fa',
+                  flexShrink: 0,
+                }}
+              >
+                <Sparkles style={{ width: 20, height: 20 }} />
+              </div>
+              <div>
+                <strong style={{ display: 'block', color: '#f8fafc', fontSize: 14, marginBottom: 2 }}>
+                  Create a free account to save this report and track progress
+                </strong>
+                <span style={{ color: '#94a3b8', fontSize: 12 }}>
+                  Guest sessions expire and are purged after 24 hours. Sign up now to link this session to your profile.
+                </span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => go('/login')}
+                style={{ color: '#cbd5e1', fontSize: 13, padding: '6px 14px' }}
+              >
+                Log in
+              </button>
+              <Pill onClick={() => go('/signup')}>Create free account</Pill>
+            </div>
+          </div>
+        )}
+
         {/* ================================================================= */}
         {/* HEADER BLOCK                                                      */}
         {/* ================================================================= */}
@@ -4918,61 +5634,91 @@ function Report({ go, path }: { go: (p: string) => void; path?: string }) {
         {/* ================================================================= */}
         <div className="next-card" style={{ marginTop: 45 }}>
           <div>
-            <span className="eyebrow">RETAKE OR NEXT ROUND?</span>
-            <h2>Choose your next move.</h2>
+            <span className="eyebrow">{isGuest ? 'GUEST PRACTICE COMPLETE' : 'RETAKE OR NEXT ROUND?'}</span>
+            <h2>{isGuest ? 'Save your progress or practice again.' : 'Choose your next move.'}</h2>
             <p>
-              Retake this {normalizedRound} round targeted on your identified weak areas, advance to the {nextRound} round, or return to your dashboard.
+              {isGuest
+                ? 'Create a free account to save this grounded evaluation and track your progress over time, or jump into another practice round.'
+                : `Retake this ${normalizedRound} round targeted on your identified weak areas, advance to the ${nextRound} round, or return to your dashboard.`}
             </p>
           </div>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-            <Pill
-              onClick={() => {
-                const focusParam = weakTopics.length > 0 ? `&focus=${encodeURIComponent(weakTopics.join(','))}` : '';
-                go(`/interview/setup?round=${encodeURIComponent(normalizedRound)}&retake=true${focusParam}`);
-              }}
-            >
-              <RotateCcw style={{ width: 14, marginRight: 6, display: 'inline' }} />
-              Retake {normalizedRound} Round
-            </Pill>
+            {isGuest ? (
+              <>
+                <Pill onClick={() => go('/signup')}>
+                  <Sparkles style={{ width: 14, marginRight: 6, display: 'inline' }} />
+                  Create Free Account to Save
+                </Pill>
+                <button
+                  className="secondary"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '9px 18px',
+                    borderRadius: 999,
+                    fontWeight: 600,
+                    fontSize: 13,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => go('/guest/setup')}
+                >
+                  <RotateCcw style={{ width: 14, display: 'inline' }} />
+                  Practice Another Round
+                </button>
+              </>
+            ) : (
+              <>
+                <Pill
+                  onClick={() => {
+                    const focusParam = weakTopics.length > 0 ? `&focus=${encodeURIComponent(weakTopics.join(','))}` : '';
+                    go(`/interview/setup?round=${encodeURIComponent(normalizedRound)}&retake=true${focusParam}`);
+                  }}
+                >
+                  <RotateCcw style={{ width: 14, marginRight: 6, display: 'inline' }} />
+                  Retake {normalizedRound} Round
+                </Pill>
 
-            <button
-              className="secondary"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '9px 18px',
-                borderRadius: 999,
-                fontWeight: 600,
-                fontSize: 13,
-                cursor: 'pointer',
-              }}
-              onClick={() => {
-                const focusParam = weakTopics.length > 0 ? `&focus=${encodeURIComponent(weakTopics.join(','))}` : '';
-                go(`/interview/setup?round=${encodeURIComponent(nextRound)}${focusParam}`);
-              }}
-            >
-              <ArrowRight style={{ width: 14, display: 'inline' }} />
-              Try {nextRound} Round
-            </button>
+                <button
+                  className="secondary"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '9px 18px',
+                    borderRadius: 999,
+                    fontWeight: 600,
+                    fontSize: 13,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => {
+                    const focusParam = weakTopics.length > 0 ? `&focus=${encodeURIComponent(weakTopics.join(','))}` : '';
+                    go(`/interview/setup?round=${encodeURIComponent(nextRound)}${focusParam}`);
+                  }}
+                >
+                  <ArrowRight style={{ width: 14, display: 'inline' }} />
+                  Try {nextRound} Round
+                </button>
 
-            <button
-              className="secondary"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '9px 18px',
-                borderRadius: 999,
-                fontWeight: 600,
-                fontSize: 13,
-                cursor: 'pointer',
-              }}
-              onClick={() => go('/dashboard')}
-            >
-              <CheckCircle2 style={{ width: 14, display: 'inline' }} />
-              Finish & Return to Dashboard
-            </button>
+                <button
+                  className="secondary"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '9px 18px',
+                    borderRadius: 999,
+                    fontWeight: 600,
+                    fontSize: 13,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => go('/dashboard')}
+                >
+                  <CheckCircle2 style={{ width: 14, display: 'inline' }} />
+                  Finish & Return to Dashboard
+                </button>
+              </>
+            )}
           </div>
         </div>
       </main>
@@ -5090,7 +5836,11 @@ function Settings({ go }: { go: (p: string) => void }) {
               <>
                 <label>
                   Name
-                  <input key={user?.name || 'Alex Kumar'} defaultValue={user?.name || 'Alex Kumar'} />
+                  <input key={user?.name || user?.email || 'Candidate'} defaultValue={user?.name || ''} placeholder="Your name" />
+                </label>
+                <label>
+                  Email
+                  <input defaultValue={user?.email || ''} disabled readOnly style={{ opacity: 0.75, cursor: 'not-allowed' }} />
                 </label>
                 <label>
                   Target role

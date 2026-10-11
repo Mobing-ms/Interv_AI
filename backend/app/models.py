@@ -75,7 +75,8 @@ class CVDocument(Base):
     __tablename__ = "cv_documents"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    is_guest = Column(Boolean, default=False, nullable=False, index=True)
     file_key = Column(String(255), nullable=False, unique=True, index=True)
     filename = Column(String(255), nullable=False)
     file_size = Column(Integer, nullable=False)
@@ -112,7 +113,8 @@ class InterviewConfig(Base):
     __tablename__ = "interview_configs"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    is_guest = Column(Boolean, default=False, nullable=False, index=True)
     round_type = Column(String(50), nullable=False)  # Technical, HR, Managerial, Mixed
     difficulty = Column(String(50), nullable=False)  # Easy, Medium, Hard, Adaptive
     duration_minutes = Column(Integer, nullable=False)  # 15, 30, 45, etc.
@@ -183,7 +185,9 @@ class UserConsent(Base):
     __tablename__ = "user_consents"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    is_guest = Column(Boolean, default=False, nullable=False, index=True)
+    guest_id = Column(String(100), nullable=True, index=True)
     version = Column(String(50), default="v1.0", nullable=False)
     retention_days = Column(Integer, default=30, nullable=False)
     accepted = Column(Boolean, default=True, nullable=False)
@@ -197,7 +201,9 @@ class InterviewSession(Base):
     __tablename__ = "interview_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    is_guest = Column(Boolean, default=False, nullable=False, index=True)
+    guest_id = Column(String(100), nullable=True, index=True)
     interview_id = Column(Integer, ForeignKey("interview_configs.id", ondelete="CASCADE"), nullable=False, index=True)
     status = Column(String(50), default="created", nullable=False)  # created, active, completed, aborted, CLOSED
     session_token = Column(String(255), unique=True, index=True, nullable=False)
@@ -223,7 +229,7 @@ class SessionCalibration(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("interview_sessions.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     face_baseline = Column(JSON, default=dict, nullable=False)   # {"neutral_score": float, "gaze_center": {"x": float, "y": float}, "head_pose": {"pitch": float, "yaw": float, "roll": float}}
     voice_baseline = Column(JSON, default=dict, nullable=False)  # {"average_volume_db": float, "pitch_range_hz": [float, float]}
     background_noise_level_db = Column(Float, default=-50.0, nullable=False)
@@ -297,7 +303,8 @@ class SessionResult(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("interview_sessions.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    is_guest = Column(Boolean, default=False, nullable=False, index=True)
     round_type = Column(String(50), nullable=False)
     role = Column(String(150), nullable=True)
     overall_score = Column(Float, nullable=False)
@@ -321,7 +328,8 @@ class SessionReport(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("interview_sessions.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    is_guest = Column(Boolean, default=False, nullable=False, index=True)
     report_data = Column(JSON, nullable=False)
     is_grounded = Column(Boolean, default=True, nullable=False)
     grounding_stats = Column(JSON, nullable=False)
@@ -332,6 +340,15 @@ class SessionReport(Base):
 
     session = relationship("InterviewSession", back_populates="report")
     user = relationship("User", back_populates="session_reports")
+
+
+class GuestIpLog(Base):
+    __tablename__ = "guest_ip_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ip_address = Column(String(64), index=True, nullable=False)
+    session_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 

@@ -39,6 +39,7 @@ def get_user_interview_context(
 
 
 @router.post("/config", response_model=InterviewConfigOut, status_code=status.HTTP_201_CREATED)
+@router.post("/setup", response_model=InterviewConfigOut, status_code=status.HTTP_201_CREATED)
 def create_interview_config(
     body: InterviewConfigCreate,
     current_user: User = Depends(get_current_user),

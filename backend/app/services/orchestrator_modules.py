@@ -47,6 +47,7 @@ class EvaluatorModuleProtocol(Protocol):
         question: Dict[str, Any],
         answer: str,
         session_context: List[Dict[str, Any]],
+        session_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Evaluates a candidate's answer and returns scoring, feedback,

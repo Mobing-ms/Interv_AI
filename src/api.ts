@@ -153,13 +153,26 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:80
 export const tokenStorage = {
   getAccessToken: (): string | null => localStorage.getItem('intervai_access_token'),
   getRefreshToken: (): string | null => localStorage.getItem('intervai_refresh_token'),
+  getGuestToken: (): string | null => localStorage.getItem('intervai_guest_token'),
+  getGuestSessionId: (): number | null => {
+    const val = localStorage.getItem('intervai_guest_session_id');
+    return val ? parseInt(val, 10) : null;
+  },
   setTokens: (accessToken: string, refreshToken: string) => {
     localStorage.setItem('intervai_access_token', accessToken);
     localStorage.setItem('intervai_refresh_token', refreshToken);
   },
+  setGuestSession: (guestToken: string, guestSessionId: number) => {
+    localStorage.setItem('intervai_guest_token', guestToken);
+    localStorage.setItem('intervai_guest_session_id', String(guestSessionId));
+  },
   clearTokens: () => {
     localStorage.removeItem('intervai_access_token');
     localStorage.removeItem('intervai_refresh_token');
+  },
+  clearGuestSession: () => {
+    localStorage.removeItem('intervai_guest_token');
+    localStorage.removeItem('intervai_guest_session_id');
   },
 };
 
@@ -173,13 +186,18 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retryOn40
   }
 
   const token = tokenStorage.getAccessToken();
+  const guestToken = tokenStorage.getGuestToken();
+
   if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);
+  } else if (!token && guestToken && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${guestToken}`);
+    headers.set('X-Guest-Token', guestToken);
   }
 
   let response: Response;
   try {
-    response = await fetch(url, { ...options, headers });
+    response = await fetch(url, { ...options, headers, credentials: 'include' });
   } catch {
     throw new ApiError('Unable to connect to server. Please check your network.', undefined, true);
   }
@@ -235,30 +253,88 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retryOn40
 
 export const api = {
   async signup(name: string, email: string, password: string): Promise<AuthResponse> {
+    const guest_session_id = tokenStorage.getGuestSessionId();
     const data = await request<AuthResponse>('/auth/signup', {
       method: 'POST',
-      body: JSON.stringify({ name, email, password }),
+      body: JSON.stringify({ name, email, password, guest_session_id }),
     });
     tokenStorage.setTokens(data.access_token, data.refresh_token);
+    tokenStorage.clearGuestSession();
     return data;
   },
 
   async login(email: string, password: string): Promise<AuthResponse> {
+    const guest_session_id = tokenStorage.getGuestSessionId();
     const data = await request<AuthResponse>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, guest_session_id }),
     });
     tokenStorage.setTokens(data.access_token, data.refresh_token);
+    tokenStorage.clearGuestSession();
     return data;
   },
 
   async googleAuth(payload: { credential?: string; token?: string; id_token?: string; email?: string; name?: string }): Promise<AuthResponse> {
+    const guest_session_id = tokenStorage.getGuestSessionId();
     const data = await request<AuthResponse>('/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ ...payload, guest_session_id }),
+    });
+    tokenStorage.setTokens(data.access_token, data.refresh_token);
+    tokenStorage.clearGuestSession();
+    return data;
+  },
+
+  // --- Guest Practice Mode ---
+  async startGuestSession(payload: {
+    target_role: string;
+    round_type: string;
+    difficulty: string;
+    turnstile_token?: string;
+    cv_text?: string;
+    cv_document_id?: number;
+  }): Promise<{
+    session_id: number;
+    session_token: string;
+    guest_token: string;
+    guest_id: string;
+    round_type: string;
+    target_role: string;
+    difficulty: string;
+    duration_minutes: number;
+    total_questions: number;
+    questions: any[];
+    ws_url: string;
+    retention_hours: number;
+  }> {
+    const data = await request<any>('/guest/start', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    tokenStorage.setTokens(data.access_token, data.refresh_token);
+    tokenStorage.setGuestSession(data.guest_token, data.session_id);
     return data;
+  },
+
+  async uploadGuestCv(file: File): Promise<{
+    cv_document_id: number;
+    filename: string;
+    file_size: number;
+    raw_text_snippet: string;
+    status: string;
+  }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return request<any>('/guest/cv/upload', {
+      method: 'POST',
+      body: formData,
+    });
+  },
+
+  async linkGuestSession(guest_session_id: number): Promise<{ status: string; session_id: number }> {
+    return request<any>('/guest/link', {
+      method: 'POST',
+      body: JSON.stringify({ guest_session_id }),
+    });
   },
 
   async getMe(): Promise<User> {
@@ -1012,7 +1088,8 @@ export interface GroundedReportData {
 export interface SessionReportResponse {
   id: number;
   session_id: number;
-  user_id: number;
+  user_id: number | null;
+  is_guest?: boolean;
   report: GroundedReportData;
   is_grounded: boolean;
   grounding_audit: GroundingAudit;

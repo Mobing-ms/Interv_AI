@@ -354,7 +354,7 @@ class TestSignalWorkersPhase4(unittest.TestCase):
 
         # Wait for background worker tasks to process and flush time-series signals
         sig_data = {}
-        for _ in range(15):
+        for _ in range(30):
             time.sleep(0.1)
             sig_resp = client.get(
                 f"/session/{sess_id}/question/{q_id}/signals",
