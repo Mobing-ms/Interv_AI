@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: float = 30.0
     LLM_MAX_RETRIES: int = 2
 
+    # Redis & Session Orchestrator Configuration
+    REDIS_URL: str = "redis://localhost:6379/0"
+    HEARTBEAT_TIMEOUT_SECONDS: float = 30.0
+    ORCHESTRATOR_WARMUP_TIME_SECONDS: int = 60
+    ORCHESTRATOR_QUESTION_TIME_SECONDS: int = 120
+    ORCHESTRATOR_PRESSURE_QUESTION_TIME_SECONDS: int = 60
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

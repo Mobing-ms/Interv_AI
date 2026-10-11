@@ -147,7 +147,8 @@ export class ApiError extends Error {
   }
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 
 export const tokenStorage = {
   getAccessToken: (): string | null => localStorage.getItem('intervai_access_token'),
@@ -511,7 +512,19 @@ export const api = {
   async getCalibration(sessionId: number): Promise<SessionCalibration> {
     return request<SessionCalibration>(`/session/${sessionId}/calibration`, { method: 'GET' });
   },
+
+  getAudioUrl(cacheKey: string): string {
+    return `${API_BASE_URL}/session/tts/audio/${cacheKey}`;
+  },
+
+  async synthesizeSpeech(text: string, language?: string): Promise<{ audio_url: string; cache_key: string; language: string }> {
+    return request('/session/tts/synthesize', {
+      method: 'POST',
+      body: JSON.stringify({ text, language }),
+    });
+  },
 };
+
 
 export interface ConfirmedProfile {
   id: number;

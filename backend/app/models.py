@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text, JSON
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text, JSON, Index
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -206,6 +206,8 @@ class InterviewSession(Base):
     user = relationship("User", back_populates="sessions")
     interview_config = relationship("InterviewConfig", back_populates="sessions")
     calibration = relationship("SessionCalibration", back_populates="session", uselist=False, cascade="all, delete-orphan")
+    signals = relationship("SignalTimeSeries", back_populates="session", cascade="all, delete-orphan")
+    integrity_events = relationship("IntegrityEvent", back_populates="session", cascade="all, delete-orphan")
 
 
 class SessionCalibration(Base):
@@ -222,6 +224,44 @@ class SessionCalibration(Base):
 
     session = relationship("InterviewSession", back_populates="calibration")
     user = relationship("User")
+
+
+class SignalTimeSeries(Base):
+    __tablename__ = "signal_time_series"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("interview_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_id = Column(Integer, nullable=False, index=True)
+    timestamp = Column(Float, nullable=False, index=True)
+    metric = Column(String(64), nullable=False, index=True)
+    value = Column(Float, nullable=False)
+    extra_data = Column(String(255), nullable=True)
+
+    __table_args__ = (
+        Index("ix_signal_sess_q_ts", "session_id", "question_id", "timestamp"),
+        Index("ix_signal_sess_metric", "session_id", "metric"),
+    )
+
+    session = relationship("InterviewSession", back_populates="signals")
+
+
+class IntegrityEvent(Base):
+    __tablename__ = "integrity_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("interview_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_id = Column(Integer, nullable=True, index=True)
+    type = Column(String(64), nullable=False, index=True)  # tab_switch, window_blur, fullscreen_exit, clipboard_copy, clipboard_paste, multiple_faces, face_missing
+    start_time = Column(Float, nullable=False)
+    end_time = Column(Float, nullable=True)
+    duration_seconds = Column(Float, default=0.0, nullable=False)
+    severity = Column(String(20), default="MEDIUM", nullable=False)  # LOW, MEDIUM, HIGH
+    details = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    session = relationship("InterviewSession", back_populates="integrity_events")
+
+
 
 
 

@@ -67,6 +67,46 @@ FastAPI backend for IntervAI, an AI mock-interview platform.
 - `GET /session/{id}/calibration`: Retrieves baseline calibration metrics.
 - `WebSocket /session/{id}/stream`: Real-time streaming channel for MediaRecorder video chunks and ping/pong keepalives.
 
+### Phase 4.1: Interview Session Orchestrator (State Machine & WebSocket Protocol)
+- **Session Orchestrator**: Core state machine per interview session managing real-time lifecycle:
+  `GREETING` → `WARMUP` → `ASKING` → `LISTENING` → `EVALUATING` → `ROUTING` → `CLOSING` → `ENDED`, with unified `ERROR` handling.
+- **Redis Session State**: Tracks `current_question`, `topic`, `follow_up_count_per_topic`, `elapsed_time`, and persistent `session_context` list of `(question, answer, score, feedback)`. Automatically falls back to embedded FakeRedis if standalone Redis instance is unavailable.
+- **Reconnection Resilience**: Disconnects mid-interview preserve exact state in Redis; reconnecting triggers `state_sync` with `resumed=True` and re-surfaces the active question without restarting.
+- **Pluggable Architecture**: Decoupled protocols and test stubs for `QuestionSelector`, `TTSModule`, `EvaluatorModule`, and `RouterModule`.
+- `GET /session/{id}/state`: Retrieves real-time Redis session state and Q/A score context.
+- `WebSocket /session/{id}/live`: Dedicated full orchestrator state machine WebSocket.
+- `WebSocket /session/{id}/stream?orchestrate=true`: Stream endpoint with orchestrator mode enabled.
+
+#### WebSocket Protocol: Event Types
+
+##### Server → Client Events
+| Event Type | Payload Fields | Description |
+|---|---|---|
+| `connected` | `session_id`, `status`, `resumed`, `state`, `message`, `timestamp` | Connection handshake frame confirming active stream. |
+| `avatar_speak` | `text`, `audio_url`, `timestamp` | Interviewer avatar speech subtitle and synthesized audio URL. |
+| `question` | `id`, `text`, `time_limit`, `topic`, `subtopic`, `difficulty`, `is_follow_up`, `timestamp` | Current interview question with countdown timer limit. |
+| `nudge` | `text`, `reason`, `timestamp` | Gentle encouragement prompt if candidate is silent or hesitant. |
+| `redirect` | `text`, `reason`, `timestamp` | Steers candidate back on track when answer drifts off-topic. |
+| `round_end` | `summary` (total_questions, average_score, topics_covered, elapsed_time_seconds), `next_state`, `timestamp` | Concludes interview round with aggregated score breakdown. |
+| `state_sync` | `resumed`, `state`, `current_question`, `topic`, `elapsed_time`, `follow_up_count_per_topic`, `context_count`, `timestamp` | Synchronizes session state upon client reconnect or recovery. |
+| `heartbeat_ack` | `client_timestamp`, `server_timestamp` | Heartbeat acknowledgment confirming active connection. |
+| `chunk_ack` | `chunk_id`, `received_at` | Acknowledges receipt of an audio or video chunk. |
+| `binary_chunk_ack` | `chunk_id`, `size`, `received_at` | Acknowledges receipt of binary media bytes. |
+| `pong` | `timestamp` | Heartbeat/latency diagnostic reply. |
+| `error` | `detail`, `timestamp` | Reports an error condition or invalid frame payload. |
+
+##### Client → Server Events
+| Event Type | Payload Fields | Description |
+|---|---|---|
+| `heartbeat` | `timestamp` | Periodic keepalive to maintain active session and prevent timeouts. |
+| `answer_started` | `timestamp` | Signals candidate has begun answering the active question. |
+| `audio_chunk` | `chunk_id`, `data` (Base64), `text` (optional), `mime_type` | Real-time audio stream chunk from MediaRecorder. |
+| `video_frame` | `timestamp`, `frame_index` | Periodic video frame timestamp/metadata for posture analysis. |
+| `answer_ended` | `text` (optional verbal response string), `timestamp` | Signals candidate has finished speaking; initiates evaluation. |
+| `integrity_event` | `event_type` (`tab_switch`, `gaze_lost`, `multiple_faces`), `details`, `timestamp` | Proctoring / integrity telemetry event. |
+| `ping` | `timestamp` | Diagnostic latency ping. |
+| `media_chunk` | `chunk_id`, `data`, `mime_type` | MediaRecorder chunk for diagnostic and stream verification. |
+
 ## How to Run
 
 1. Activate virtual environment:
@@ -97,7 +137,9 @@ python test_interview_phase2_1.py
 python test_interview_blueprint.py
 python test_question_bank_phase2_3.py
 python test_preinterview_phase3_1.py
+python test_orchestrator_phase4_1.py
 ```
+
 To seed fake interview history for testing returning users:
 ```bash
 python seed_user_history.py

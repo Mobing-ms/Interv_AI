@@ -197,11 +197,156 @@ To seed simulated returning-candidate history:
 
 ---
 
-## 6. Project Phase Status Summary
+## 6. Phase 4 Accomplishments & Architecture
+
+### Phase 4.1: Interview Session Orchestrator (Core State Machine & WebSocket Protocol) (100% Complete & Verified)
+- **State Machine per Session**:
+  - Full autonomous + reactive turn-taking state machine: `GREETING` → `WARMUP` → `ASKING` → `LISTENING` → `EVALUATING` → `ROUTING` → `CLOSING` → `ENDED`, with unified `ERROR` handling.
+  - Enforces smooth progression through interview rounds with duration and difficulty constraints.
+- **Redis Session State Persistence**:
+  - Real-time serialization to Redis (`SessionStateData`):
+    - `current_question`: Active question dictionary (`id`, `text`, `time_limit`, `topic`, `subtopic`, `difficulty`, `is_follow_up`).
+    - `topic`: Current domain area.
+    - `follow_up_count_per_topic`: Follow-up tracker (strictly enforcing max 2 follow-ups per topic).
+    - `elapsed_time`: High-precision timer tracking session progression.
+    - `session_context`: History list of asked questions, candidate answers, scores, feedback, and key points covered.
+    - `integrity_events`: Telemetry log of tab switches, gaze tracking lost, etc.
+  - Seamless fallback to embedded FakeRedis if standalone Redis instance is not running on developer machines.
+- **WebSocket Protocol (Server ⇄ Client Events)**:
+  - **Server → Client**: `avatar_speak` (text, audio_url), `question` (id, text, time_limit), `nudge`, `redirect`, `round_end`, `state_sync`, `heartbeat_ack`, `connected`, `chunk_ack`, `binary_chunk_ack`, `pong`, `error`.
+  - **Client → Server**: `audio_chunk`, `video_frame`, `answer_started`, `answer_ended`, `integrity_event`, `heartbeat`, `ping`, `media_chunk`.
+- **Reconnection Resilience & Heartbeat Handling**:
+  - Network drops mid-interview preserve exact state in Redis.
+  - Reconnecting client sends auth token and receives `connected(resumed=True)` and `state_sync`.
+  - Re-surfaces current question without losing previous Q/A history or restarting the round.
+  - Heartbeat monitor updates `last_heartbeat` timestamp and detects timeouts.
+- **Pluggable Architecture & Testable Interfaces**:
+  - `QuestionSelectorProtocol` + `StubQuestionSelector`
+  - `TTSModuleProtocol` + `StubTTS`
+  - `EvaluatorModuleProtocol` + `StubEvaluator`
+  - `RouterModuleProtocol` + `StubRouter`
+- **Endpoints**:
+  - `GET /session/{id}/state`: Read current Redis session state.
+  - `WebSocket /session/{id}/live`: Dedicated full orchestrator WebSocket endpoint.
+  - `WebSocket /session/{id}/stream?orchestrate=true`: Dual-mode streaming endpoint.
+- **Verification**:
+  - `test_orchestrator_phase4_1.py`: 5/5 unit & integration tests passing (scripted fake client full session, dropped connection recovery, pressure mode countdowns, integrity events, stream flag delegation).
+
+### Phase 4.2: Interviewer Side (Avatar Greeting, Question Selector & TTS Service) (100% Complete & Verified)
+- **Avatar Greeting & Warmup**:
+  - Contextual candidate greeting generated from name and target role.
+  - Standardized warmup inquiry: "Tell me about yourself and your background."
+  - Animated avatar with interactive states: `speaking`, `listening`, `thinking`.
+- **Question Selector Service (`select_next_question`)**:
+  - Weighted selection by blueprint topic weights, current difficulty curve, and CV relevance priority.
+  - Pending follow-up prioritization and strict question de-duplication against `session_context`.
+- **Text-to-Speech (TTS) Service**:
+  - Provider abstraction with gTTS provider and browser SpeechSynthesis fallback.
+  - Audio caching (`/session/tts/audio/{hash}.mp3`), subtitles generation, and audio endpoint `GET /session/tts/audio/{filename}`.
+- **Frontend Playback Ready Signal**:
+  - Subtitle display synchronized with speech audio.
+  - Audio playback completion dispatches `client_ready`, starting orchestrator answer recording and countdown timer.
+- **Verification**: `test_interviewer_phase4_2.py` (8/8 tests passed).
+
+---
+
+### Phase 4.3: Answer Capture (VAD, Streaming STT, 8s Silence Nudge & Storage) (100% Complete & Verified)
+- **Audio & Video Streaming**:
+  - Frontend records and streams 16 kHz mono PCM chunks via `MediaRecorder` over WebSocket.
+  - 1 fps offscreen canvas video frame capture streamed over WebSocket.
+  - Visual mic activity meter (`AudioContext` / `AnalyserNode`), countdown timer, and prominent "I'm done" manual backup button.
+  - Real-time streaming candidate transcript display (`transcript_update`).
+- **8-Second Silence Rule & Hesitation Logging**:
+  - Watchdog timer tracks answer duration. If candidate remains silent for 8s, emits gentle rephrase/nudge and records hesitation event in `integrity_events`. Strictly limited to at most one nudge per question.
+- **Voice Activity Detection (VAD)**:
+  - `VADDetector` combines WebRTC VAD with RMS noise floor gating (`rms < 100.0` prevents false positive noise detections).
+  - `VoiceActivityTracker` automatically concludes answer after 2.5s silence with protection against cutting off candidates mid-thought (requires $\ge 1.0$s minimum speech duration).
+- **Streaming Speech-to-Text with Word-Level Timestamps**:
+  - `StreamingSTTService` outputs transcripts with progressive word timings (`[{"word": ..., "start": ..., "end": ...}]`).
+- **Session Artifact Storage Manager**:
+  - Persists audio chunks (`audio_chunks/chunk_XXXX.bin`), 1 fps video frames (`frames/frame_XXXX.jpg`), and word-timed transcript (`transcript.json`) under `storage/sessions/{session_id}/{question_id}/`.
+  - Accessible via `GET /session/{id}/question/{question_id}/artifacts`.
+- **Verification**: `test_answer_capture_phase4_3.py` (7/7 tests passed; 50/50 full regression tests passed).
+
+### Phase 4.4: Evaluator & Dynamic Router (100% Complete & Verified)
+- **Evaluation Rubric & LLM Prompt Template (`backend/app/prompts/evaluation_rubric.py`)**:
+  - Single, tunable source of truth for evaluation criteria.
+  - Multi-dimensional scoring: Relevance (0-10), Correctness (0-10), Depth (0-10), Overall Score (0-10).
+  - STAR Completeness rubric for behavioral questions (Situation, Task, Action, Result) with quantified sub-scores.
+  - Classification standards: `STRONG`, `OK`, `WEAK_VAGUE`, `OFF_TOPIC`.
+  - Justification requirements with mandatory direct transcript quotation.
+- **Answer Evaluator (`backend/app/services/evaluator_service.py`)**:
+  - Pure Python keyword coverage computed in code (`compute_keyword_coverage`) with case/punctuation normalization and substring/token matching (`matched`, `missing`, `coverage_ratio`).
+  - STAR completeness detector (`evaluate_star_completeness`) analyzing behavioral structure.
+  - Low-temperature LLM scoring with fallback to `deterministic_evaluate` for reproducible offline operation.
+  - Appends full validated evaluation breakdown to persistent `session_context`.
+- **Pure Router Decision Logic (`backend/app/services/router_service.py`)**:
+  - Pure function `decide_route(state, last_eval, blueprint)` implementing branching:
+    - `WEAK_VAGUE`: Generates targeted probing follow-up from answer gap, strictly enforcing $\le 2$ follow-ups per topic (`probing_follow_up`).
+    - `STRONG`: Raises difficulty (`Easy` → `Medium` → `Hard`) or deepens technical exploration on the same topic.
+    - `OFF_TOPIC`: Politely redirects candidate and repeats original question once (`redirect`).
+    - Topic Done: Advances to next blueprint topic when question allocation is met.
+    - Round Done: Assesses elapsed time, target question count, or topic coverage; routes to `close`.
+- **Closing & Candidate Q&A Handling**:
+  - "Any questions for us?" wrap-up handling with `handle_closing_inquiry` (culture, tech stack, general questions) followed by thank-you and clean session termination (`status = "completed"`).
+- **Verification**: `test_evaluator_router_phase4_4.py` (9/9 tests passed; 59/59 full regression tests passed).
+
+### Phase 4.5: Parallel Signal Workers & Time-Series Telemetry Store (100% Complete & Verified)
+- **Video Signal Worker (1 fps)**:
+  - Non-blocking frame analysis using landmark geometry and MediaPipe face mesh with dynamic fallback.
+  - Per-frame metrics: `face_present`, `eye_contact` (vs calibration baseline), `head_yaw`, `head_pitch`, `head_roll`, `emotion_valence`, `posture_alignment`, `movement_level` (fidgeting displacement).
+- **Audio Signal Worker (16 kHz chunks)**:
+  - Non-blocking audio analysis computing `volume_rms` (RMS volume in dB), `pitch_hz` (autocorrelation pitch tracker), `speech_pace_wpm` (from streaming STT timings), `filler_count` & `filler_rate` (regex matching "um", "uh", "like", "you know", "basically", etc.), `pause_count`, and `clarity_proxy`.
+- **Time-Series Telemetry Store (`signal_time_series`)**:
+  - Model `SignalTimeSeries`: `session_id`, `question_id`, `timestamp`, `metric`, `value`, `extra_data`.
+  - Compound indexes for efficient real-time lookups: `ix_signal_sess_q_ts` (`session_id`, `question_id`, `timestamp`) and `ix_signal_sess_metric` (`session_id`, `metric`).
+  - In-memory cache + asynchronous batch flusher (`SignalBatchStore`).
+- **Asynchronous Processing & Backpressure**:
+  - `ParallelSignalProcessor` runs worker event loops with bounded queues (`max_video_queue=10`, `max_audio_queue=25`).
+  - Drops oldest frames/chunks when saturated rather than stalling or lagging the interview state machine.
+- **Debug Endpoints**:
+  - `GET /session/{id}/question/{question_id}/signals` and `GET /session/{id}/signals`.
+  - Returns per-question video & audio signals, aggregated summary metrics, and side-by-side comparison against calibration baseline (`head_yaw_delta_from_baseline`, `eye_contact_relative_to_baseline`).
+- **Verification**: `test_signal_workers_phase4_5.py` (6/6 tests passed; 65/65 full regression tests passed).
+
+### Phase 4.6: Integrity Monitor (Frontend Telemetry, Video Multi-Face/Missing Face Detection, Gentle Warning & Flagging) (100% Complete & Verified)
+- **Frontend Telemetry Listeners**:
+  - Page Visibility API (`visibilitychange`): detects tab switching and sends `tab_switch`.
+  - Window blur listener (`window.addEventListener('blur')`): detects app unfocus and sends `window_blur`.
+  - Fullscreen API (`fullscreenchange`): detects fullscreen exit and sends `fullscreen_exit`.
+  - Clipboard monitoring (`copy`, `paste`, `cut`): detects external copy/paste attempts and sends `clipboard_copy` / `clipboard_paste`.
+  - Streams events via WebSocket with timestamps and active question ID.
+- **Backend Video Worker Integrity Detection**:
+  - Detects second face in camera view (`multiple_faces`, `severity="HIGH"`).
+  - Detects candidate absence/face missing for > N seconds (`face_missing`, configurable threshold e.g. 3.0s).
+- **First-Time Gentle Warning**:
+  - Emits `integrity_warning` message over WebSocket on first infraction: *"Gentle reminder: Please remain facing the camera in full view and keep this window active."*
+  - Subsequent events are recorded silently for the report without spamming the candidate.
+- **Threshold Flagging without Auto-Termination**:
+  - Does NOT terminate or abort the interview; candidate finishes uninterrupted.
+  - Configurable threshold (e.g. 3 events): marks session and report as flagged (`is_flagged = True`, `flag_reasons = [...]`).
+- **Data Model & REST Query Endpoints**:
+  - Table `integrity_events`: `id`, `session_id`, `question_id`, `type`, `start_time`, `end_time`, `duration_seconds`, `severity`, `details`, `created_at`.
+  - `GET /session/{id}/integrity-events` and `GET /session/{id}/integrity`: returns full list of events, aggregated breakdown by type and severity, and threshold flag assessment.
+- **Verification**: `test_integrity_monitor_phase4_6.py` (6/6 tests passed; 71/71 full regression tests passed).
+
+---
+
+## 7. Project Phase Status Summary
 - **Phase 1**: Authentication, Profile Onboarding, CV Extraction, Structuring, Canonical DB (Complete & Verified)
 - **Phase 2**: Setup & Memory, Blueprint Builder, Question Pool & Deduplicated Bank (Complete & Verified)
-- **Phase 3.1**: Pre-Interview Check, Consent, Calibration & Session (Complete & Verified)
-- **Phase 3.2**: Next Phase (Interactive live turn-taking, speech-to-text audio pipeline, dynamic follow-up questioning).
+- **Phase 3**: Pre-Interview Check, Consent, Calibration & Session Lifecycle (Complete & Verified)
+- **Phase 4**: Full Live Interview Engine (100% Complete & Verified across all 6 prompts):
+  - **4.1**: Session Orchestrator State Machine & WebSocket Protocol
+  - **4.2**: Interviewer Side (Avatar Greeting, Question Selector, TTS Engine)
+  - **4.3**: Answer Capture (Audio/Video Streaming, VAD, 8s Silence Nudge, Word-Timed STT, Storage)
+  - **4.4**: Answer Evaluator (Rubric, Code Keyword Coverage, STAR) & Dynamic Router
+  - **4.5**: Parallel Signal Workers (Video & Audio), Time-Series Telemetry Store & Baseline Comparison
+  - **4.6**: Integrity Monitor (Frontend Events, Video Multi-Face/Missing Face, Warning, Threshold Flagging)
+- **Phase 5**: Post-interview comprehensive evaluation report, analytics, feedback generation.
+
+
+
 
 
 

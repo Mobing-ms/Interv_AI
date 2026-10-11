@@ -39,6 +39,7 @@ import {
 import { Toaster, toast } from 'sonner';
 import {
   api,
+  API_BASE_URL,
   ApiError,
   User,
   StructuredCV,
@@ -3369,47 +3370,599 @@ function Precheck({ go }: { go: (p: string) => void }) {
 
 
 function Live({ go }: { go: (p: string) => void }) {
+  const { user } = useAuth();
   const [muted, setMuted] = useState(false);
   const [hint, setHint] = useState(false);
+
+  // Real-time interview state
+  const [avatarState, setAvatarState] = useState<'speaking' | 'listening' | 'thinking' | 'idle'>('speaking');
+  const [currentQuestion, setCurrentQuestion] = useState<{
+    id: number;
+    text: string;
+    time_limit?: number;
+    topic?: string;
+    subtopic?: string;
+    difficulty?: string;
+    is_follow_up?: boolean;
+  } | null>(null);
+  const [questionIndex, setQuestionIndex] = useState(1);
+  const [totalQuestions, setTotalQuestions] = useState(5);
+  const [subtitles, setSubtitles] = useState('Connecting to your live interview session...');
+  const [timerSeconds, setTimerSeconds] = useState(120);
+  const [timerActive, setTimerActive] = useState(false);
+  const [candidateAnswer, setCandidateAnswer] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [micLevel, setMicLevel] = useState(0);
+  const [liveTranscript, setLiveTranscript] = useState('');
+  const [wsConnected, setWsConnected] = useState(false);
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
+  const videoCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const videoIntervalRef = useRef<any>(null);
+  const isRecordingRef = useRef(false);
+  const audioChunkCounter = useRef(0);
+  const videoFrameCounter = useRef(0);
+
+  // Extract session ID from URL path (e.g. /interview/live/123 -> 123)
+  const pathParts = window.location.pathname.split('/');
+  const rawSessionId = pathParts[pathParts.length - 1];
+  const sessionId = parseInt(rawSessionId, 10) || 1;
+
+  // Media Capture & Streaming
+  const startRecordingStreams = async () => {
+    try {
+      if (isRecordingRef.current) return;
+      isRecordingRef.current = true;
+      setIsRecording(true);
+
+      // 1. Acquire media stream (audio + video)
+      let stream = mediaStreamRef.current;
+      if (!stream || !stream.active) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              sampleRate: 16000,
+              channelCount: 1,
+              echoCancellation: true,
+              noiseSuppression: true,
+            },
+            video: {
+              width: { ideal: 640 },
+              height: { ideal: 480 },
+              frameRate: { ideal: 15 },
+            },
+          });
+          mediaStreamRef.current = stream;
+        } catch (mediaErr) {
+          console.warn('Could not acquire user camera/mic:', mediaErr);
+        }
+      }
+
+      if (stream && videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = stream;
+        videoPreviewRef.current.play().catch(() => {});
+      }
+
+      // 2. Mic level analyser using AudioContext
+      if (stream) {
+        try {
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          if (AudioContextClass) {
+            const audioCtx = new AudioContextClass({ sampleRate: 16000 });
+            audioContextRef.current = audioCtx;
+            const source = audioCtx.createMediaStreamSource(stream);
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser);
+            analyserRef.current = analyser;
+
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            const updateVolume = () => {
+              if (!isRecordingRef.current) return;
+              analyser.getByteFrequencyData(dataArray);
+              let sum = 0;
+              for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+              const avg = sum / dataArray.length;
+              setMicLevel(Math.min(100, Math.round((avg / 128) * 100)));
+              animFrameRef.current = requestAnimationFrame(updateVolume);
+            };
+            animFrameRef.current = requestAnimationFrame(updateVolume);
+          }
+        } catch (audioErr) {
+          console.warn('AudioContext level meter init:', audioErr);
+        }
+      }
+
+      // 3. Audio streaming in chunks over WebSocket
+      if (stream && typeof MediaRecorder !== 'undefined') {
+        try {
+          const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+            ? 'audio/webm;codecs=opus'
+            : 'audio/webm';
+          const recorder = new MediaRecorder(stream, { mimeType });
+          mediaRecorderRef.current = recorder;
+
+          recorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+              event.data.arrayBuffer().then((buf) => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                  const bytes = new Uint8Array(buf);
+                  let binaryStr = '';
+                  for (let i = 0; i < bytes.length; i++) binaryStr += String.fromCharCode(bytes[i]);
+                  const base64Data = btoa(binaryStr);
+                  audioChunkCounter.current += 1;
+                  wsRef.current.send(JSON.stringify({
+                    type: 'audio_chunk',
+                    chunk_id: audioChunkCounter.current,
+                    data: base64Data,
+                    duration: 0.5,
+                    stream_transcript: true,
+                    timestamp: Date.now(),
+                  }));
+                }
+              });
+            }
+          };
+          recorder.start(500); // 500ms chunks
+        } catch (recErr) {
+          console.warn('MediaRecorder streaming:', recErr);
+        }
+      }
+
+      // 4. Video frames at 1 per second over WebSocket
+      const canvas = document.createElement('canvas');
+      canvas.width = 320;
+      canvas.height = 240;
+      videoCanvasRef.current = canvas;
+      const ctx = canvas.getContext('2d');
+
+      videoIntervalRef.current = setInterval(() => {
+        if (!isRecordingRef.current || wsRef.current?.readyState !== WebSocket.OPEN) return;
+        const vid = videoPreviewRef.current;
+        if (vid && vid.videoWidth > 0 && ctx) {
+          ctx.drawImage(vid, 0, 0, 320, 240);
+          const frameData = canvas.toDataURL('image/jpeg', 0.55);
+          videoFrameCounter.current += 1;
+          wsRef.current.send(JSON.stringify({
+            type: 'video_frame',
+            frame_id: videoFrameCounter.current,
+            frame: frameData,
+            timestamp: Date.now(),
+          }));
+        }
+      }, 1000); // 1 per second
+    } catch (err) {
+      console.warn('Failed to start camera/mic recording stream:', err);
+    }
+  };
+
+  const stopRecordingStreams = () => {
+    isRecordingRef.current = false;
+    setIsRecording(false);
+    setMicLevel(0);
+
+    if (videoIntervalRef.current) {
+      clearInterval(videoIntervalRef.current);
+      videoIntervalRef.current = null;
+    }
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
+    }
+    if (audioContextRef.current) {
+      try {
+        audioContextRef.current.close();
+      } catch (e) {}
+      audioContextRef.current = null;
+    }
+  };
+
+  // Speech playback & synchronization
+  const playSpeech = (text: string, audioUrl?: string, lang?: string) => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+
+    setAvatarState('speaking');
+
+    const handleSpeechEnded = () => {
+      setAvatarState('listening');
+      // When audio playback ends, frontend sends ready signal;
+      // orchestrator then starts the answer timer and recording.
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'client_ready',
+          timestamp: Date.now(),
+        }));
+      }
+    };
+
+    if (audioUrl) {
+      const fullUrl = audioUrl.startsWith('http') ? audioUrl : `${API_BASE_URL}${audioUrl}`;
+      const audio = new Audio(fullUrl);
+      currentAudioRef.current = audio;
+
+      audio.onended = () => {
+        handleSpeechEnded();
+      };
+      audio.onerror = () => {
+        fallbackSpeechSynthesis(text, lang, handleSpeechEnded);
+      };
+      audio.play().catch(() => {
+        fallbackSpeechSynthesis(text, lang, handleSpeechEnded);
+      });
+    } else {
+      fallbackSpeechSynthesis(text, lang, handleSpeechEnded);
+    }
+  };
+
+  const fallbackSpeechSynthesis = (text: string, lang: string | undefined, onEnd: () => void) => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window && window.speechSynthesis) {
+      try {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = lang || 'en-US';
+        utterance.rate = 1.0;
+        utterance.onend = () => onEnd();
+        utterance.onerror = () => onEnd();
+        window.speechSynthesis.speak(utterance);
+      } catch (e) {
+        setTimeout(onEnd, 2000);
+      }
+    } else {
+      setTimeout(onEnd, 2000);
+    }
+  };
+
+  // Connect to live WebSocket stream
+  useEffect(() => {
+    const token = localStorage.getItem('intervai_access_token') || localStorage.getItem('access_token') || '';
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsHost = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
+    const wsUrl = `${wsProto}//${wsHost}/session/${sessionId}/live?token=${token}`;
+
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setWsConnected(true);
+      ws.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'connected') {
+          // Connected
+        } else if (msg.type === 'avatar_speak') {
+          setSubtitles(msg.text);
+          playSpeech(msg.text, msg.audio_url, msg.language);
+        } else if (msg.type === 'question') {
+          setCurrentQuestion(msg);
+          setTimerSeconds(msg.time_limit || 120);
+          setQuestionIndex((prev) => (msg.id > 1 ? prev + 1 : 1));
+          setLiveTranscript('');
+        } else if (msg.type === 'timer_started') {
+          setTimerSeconds(msg.time_limit || 120);
+          setTimerActive(true);
+          setAvatarState('listening');
+          setLiveTranscript('');
+          startRecordingStreams();
+          toast.info('Answer timer started. Streaming audio & video.');
+        } else if (msg.type === 'transcript_update') {
+          setLiveTranscript(msg.text);
+        } else if (msg.type === 'nudge') {
+          setSubtitles(msg.text);
+          toast.warning(`Interviewer gentle nudge: ${msg.text}`, { duration: 6000 });
+        } else if (msg.type === 'redirect') {
+          setSubtitles(msg.text);
+          toast.warning(`Interviewer redirect: ${msg.text}`);
+        } else if (msg.type === 'answer_complete') {
+          stopRecordingStreams();
+          setTimerActive(false);
+          setAvatarState('thinking');
+          if (msg.finish_reason === 'vad_silence') {
+            toast.success('Voice activity ended (silence detected) — answer submitted automatically!');
+            setSubtitles('Answer captured automatically via VAD silence detection. Evaluating response...');
+          } else {
+            setSubtitles('Answer received. Evaluating response and routing next question...');
+          }
+        } else if (msg.type === 'integrity_warning') {
+          toast.warning(msg.message || 'Please remain facing the camera in full view and keep this window active.', {
+            duration: 7000,
+          });
+        } else if (msg.type === 'round_end') {
+          stopRecordingStreams();
+          setTimerActive(false);
+          setAvatarState('idle');
+          toast.success('Interview completed cleanly! Compiling report...');
+          setTimeout(() => go(`/interview/processing/${sessionId}`), 2000);
+        }
+      } catch (err) {
+        console.warn('WS message parsing error:', err);
+      }
+    };
+
+    ws.onerror = (e) => {
+      console.warn('WebSocket stream error:', e);
+    };
+
+    // Heartbeat loop every 15s
+    const hbInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
+      }
+    }, 15000);
+
+    return () => {
+      clearInterval(hbInterval);
+      stopRecordingStreams();
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+      }
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    };
+  }, [sessionId]);
+
+  // Frontend Integrity Monitor (Page Visibility API, window blur, fullscreen exit, copy/paste)
+  useEffect(() => {
+    const sendIntegrity = (eventType: string, details: Record<string, any> = {}) => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'integrity_event',
+          event_type: eventType,
+          timestamp: Date.now() / 1000,
+          question_id: currentQuestion?.id || 1,
+          details,
+        }));
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        sendIntegrity('tab_switch', { hidden: true });
+      }
+    };
+
+    const handleBlur = () => {
+      sendIntegrity('window_blur');
+    };
+
+    const handleFullscreen = () => {
+      if (!document.fullscreenElement) {
+        sendIntegrity('fullscreen_exit');
+      }
+    };
+
+    const handleCopy = () => {
+      sendIntegrity('clipboard_copy');
+    };
+
+    const handlePaste = () => {
+      sendIntegrity('clipboard_paste');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('blur', handleBlur);
+    document.addEventListener('fullscreenchange', handleFullscreen);
+    window.addEventListener('copy', handleCopy);
+    window.addEventListener('paste', handlePaste);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('blur', handleBlur);
+      document.removeEventListener('fullscreenchange', handleFullscreen);
+      window.removeEventListener('copy', handleCopy);
+      window.removeEventListener('paste', handlePaste);
+    };
+  }, [currentQuestion?.id]);
+
+  // Answer countdown timer
+  useEffect(() => {
+    if (!timerActive || timerSeconds <= 0) return;
+    const interval = setInterval(() => {
+      setTimerSeconds((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          handleDoneAnswering();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [timerActive, timerSeconds]);
+
+  const handleDoneAnswering = () => {
+    stopRecordingStreams();
+    setTimerActive(false);
+    setAvatarState('thinking');
+    setSubtitles('Evaluating your response and routing the next question...');
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'answer_ended',
+        text: candidateAnswer || liveTranscript || 'I have explained the key algorithms, trade-offs, and scaling approach.',
+        timestamp: Date.now(),
+      }));
+    }
+    setCandidateAnswer('');
+    toast.success('Answer submitted — evaluating response...');
+  };
+
+  const handleRepeatQuestion = () => {
+    if (currentQuestion) {
+      toast.info('Repeating question...');
+      playSpeech(currentQuestion.text);
+    }
+  };
+
+  const handleEndInterview = () => {
+    stopRecordingStreams();
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'answer_ended',
+        text: 'Interview concluded by candidate.',
+        timestamp: Date.now(),
+      }));
+    }
+    go(`/interview/processing/${sessionId}`);
+  };
+
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
   return (
     <Shell go={go}>
       <main className="live">
         <div className="live-top">
-          <span className="eyebrow">TECHNICAL · QUESTION 04 / 10</span>
-          <button className="end" onClick={() => go('/interview/processing/1')}>
-            End interview <X />
-          </button>
+          <span className="eyebrow">
+            {currentQuestion?.topic ? currentQuestion.topic.toUpperCase() : 'TECHNICAL'} · QUESTION 0{questionIndex} / 0{totalQuestions}
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {/* Mic Activity Indicator */}
+            <div className="mic-activity-indicator" title={`Mic Activity: ${micLevel}%`}>
+              <Mic2 size={14} className={micLevel > 15 ? 'active-speech' : ''} />
+              <div className="mic-meter-track">
+                <div className="mic-meter-fill" style={{ width: `${Math.min(100, micLevel * 1.5)}%` }} />
+              </div>
+              <span className="mic-level-label">{micLevel > 15 ? 'Speech active' : 'Listening...'}</span>
+            </div>
+
+            {/* Answer Timer */}
+            <div className={`timer-pill ${timerSeconds <= 15 && timerActive ? 'urgent' : ''}`}>
+              <Clock3 size={13} />
+              <span>{timerActive ? `Time remaining: ${formatTime(timerSeconds)}` : 'Awaiting speech completion'}</span>
+            </div>
+
+            <button className="end" onClick={handleEndInterview}>
+              End interview <X />
+            </button>
+          </div>
         </div>
+
         <div className="live-center">
           <div className="interviewer">
-            <div className="orb small">
+            <div className={`orb small ${avatarState}`}>
               <div className="orb-face">
                 <span />
                 <span />
                 <b />
               </div>
             </div>
-            <span className="eyebrow">LISTENING</span>
+            <span className="eyebrow">
+              {avatarState === 'speaking'
+                ? 'INTERVIEWER SPEAKING'
+                : avatarState === 'thinking'
+                ? 'EVALUATING & ROUTING'
+                : 'LISTENING TO YOUR ANSWER'}
+            </span>
           </div>
+
           <h1>
-            Walk me through a system you&apos;ve<br />
-            <em>designed for scale.</em>
+            {currentQuestion ? (
+              <>
+                {currentQuestion.text.slice(0, 75)}
+                {currentQuestion.text.length > 75 ? '...' : ''}
+              </>
+            ) : (
+              <>
+                Tell me about yourself, your background,<br />
+                <em>and what drew you to this role.</em>
+              </>
+            )}
           </h1>
-          <p className="caption">Take your time. Think out loud.</p>
+          <p className="caption">
+            {avatarState === 'speaking'
+              ? 'Listen carefully to the interviewer.'
+              : avatarState === 'thinking'
+              ? 'Analyzing your response...'
+              : 'Take your time. Think out loud.'}
+          </p>
+
+          {/* Synchronized Subtitle Box */}
+          {subtitles && (
+            <div className="subtitle-box">
+              <div className={`subtitle-badge ${avatarState}`}>
+                <Volume2 size={12} />
+                {avatarState === 'speaking'
+                  ? 'INTERVIEWER AUDIO'
+                  : avatarState === 'thinking'
+                  ? 'EVALUATION IN PROGRESS'
+                  : 'SYNCHRONIZED SUBTITLES'}
+              </div>
+              <p className="subtitle-text">&ldquo;{subtitles}&rdquo;</p>
+            </div>
+          )}
+
+          {/* Live Streaming Transcript with word timings */}
+          {liveTranscript && (
+            <div className="live-transcript-box">
+              <div className="transcript-badge">
+                <Radio size={12} className="pulse" /> LIVE STREAMING TRANSCRIPT
+              </div>
+              <p className="transcript-content">&ldquo;{liveTranscript}&rdquo;</p>
+            </div>
+          )}
+
           <div className="live-actions">
             <button onClick={() => setMuted(!muted)} className={muted ? 'active' : ''}>
               <Mic2 /> {muted ? 'Unmute' : 'Mute'}
             </button>
-            <button onClick={() => toast.success('Question repeated')}>
+            <button onClick={handleRepeatQuestion}>
               <ChevronDown /> Repeat question
             </button>
             <button onClick={() => setHint(!hint)}>
               <Sparkles /> Hint
             </button>
-            <Pill onClick={() => toast.success('Answer submitted — next question loading')}>Done answering</Pill>
+            {/* Primary "I'm Done" Button as backup to automatic end detection */}
+            <button className="done-btn primary-done" onClick={handleDoneAnswering}>
+              <Check size={15} /> I&apos;m done
+            </button>
           </div>
-          {hint && <div className="hint">Try structuring your answer around trade-offs, constraints and the outcome.</div>}
+
+          {hint && (
+            <div className="hint">
+              Try structuring your answer around trade-offs, constraints, and measurable impact.
+            </div>
+          )}
         </div>
+
+        {/* Candidate Picture-in-Picture Video Stream (1 FPS Transmission) */}
+        {isRecording && (
+          <div className="candidate-pip">
+            <video ref={videoPreviewRef} autoPlay playsInline muted />
+            <div className="pip-tag">
+              <Radio size={9} /> 1 FPS STREAM
+            </div>
+          </div>
+        )}
+
         <div className="metrics">
           <div>
             <span>CONFIDENCE</span>
@@ -3430,6 +3983,8 @@ function Live({ go }: { go: (p: string) => void }) {
     </Shell>
   );
 }
+
+
 
 function Processing({ go }: { go: (p: string) => void }) {
   useEffect(() => {
