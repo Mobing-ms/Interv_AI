@@ -13,6 +13,7 @@ from app.routers.profile import router as profile_router
 from app.routers.cv import router as cv_router
 from app.routers.interview import router as interview_router
 from app.routers.session import router as session_router
+from app.routers.report import router as report_router
 
 
 @asynccontextmanager
@@ -61,6 +62,7 @@ app.include_router(profile_router)
 app.include_router(cv_router)
 app.include_router(interview_router)
 app.include_router(session_router)
+app.include_router(report_router)
 
 
 @app.get("/")

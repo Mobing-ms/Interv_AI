@@ -276,6 +276,171 @@ def create_session(
     )
 
 
+@router.get("/dashboard-summary")
+def get_dashboard_summary(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns aggregated dashboard metrics (Phase 6.3):
+    - Past session list with round types, dates, scores, and classifications
+    - Latest session with overall score and subscores
+    - Practice trend scores for historical charts
+    - Current identified weak areas and topic masteries from UserMemory
+    - Session count and average composite score
+    - Quick action recommendations (Retake, Next round type, Practice weak topics)
+    - Confirmed profile status (skip Phase 1 flag)
+    """
+    from app.models import Profile, UserMemory, SessionResult
+    from app.services.interview_context import ensure_user_memory_updated
+
+    # Ensure memory updated from latest session
+    ensure_user_memory_updated(current_user.id, db)
+
+    # Fetch user sessions
+    user_sessions = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.user_id == current_user.id)
+        .order_by(InterviewSession.created_at.desc())
+        .all()
+    )
+
+    formatted_sessions = []
+    trend_scores = []
+    completed_scores = []
+
+    for sess in user_sessions:
+        cfg = sess.interview_config
+        res = sess.result
+
+        round_type = cfg.round_type if cfg else "Technical"
+        difficulty = cfg.difficulty if cfg else "Medium"
+        created_str = sess.created_at.strftime("%b %d, %Y") if sess.created_at else ""
+
+        sess_dict = {
+            "id": sess.id,
+            "round_type": round_type,
+            "role": res.role if res else (getattr(current_user, "target_role", None) or "Software Engineer"),
+            "difficulty": difficulty,
+            "status": sess.status,
+            "created_at": sess.created_at.isoformat() if sess.created_at else None,
+            "date_display": created_str,
+            "overall_score": res.overall_score if res else None,
+            "content_score": res.content_score if res else None,
+            "speech_score": res.speech_score if res else None,
+            "face_score": res.face_score if res else None,
+            "classification": res.classification if res else ("COMPLETED" if sess.status.lower() in ("closed", "completed") else "IN_PROGRESS"),
+            "weak_areas": res.weak_areas if res else [],
+            "has_report": sess.report is not None,
+        }
+        formatted_sessions.append(sess_dict)
+
+        if res and res.overall_score is not None:
+            completed_scores.append(res.overall_score)
+            trend_scores.append({
+                "session_id": sess.id,
+                "date": sess.created_at.strftime("%b %d") if sess.created_at else f"S{sess.id}",
+                "score": round(res.overall_score, 1),
+                "round": round_type,
+            })
+
+    # Chronological left-to-right display
+    trend_scores.reverse()
+
+    # User Memory
+    mem = db.query(UserMemory).filter(UserMemory.user_id == current_user.id).first()
+    weak_topics = list(mem.weak_topics) if mem and mem.weak_topics else []
+    topic_scores = dict(mem.topic_scores) if mem and mem.topic_scores else {}
+
+    # Average score
+    avg_score = round(sum(completed_scores) / len(completed_scores), 1) if completed_scores else 0.0
+
+    # Profile confirmed check
+    has_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first() is not None
+
+    # Next recommended round calculation
+    last_round = formatted_sessions[0]["round_type"] if formatted_sessions else "Technical"
+    round_order = ["Technical", "HR", "Managerial", "Mixed"]
+    try:
+        next_idx = (round_order.index(last_round) + 1) % len(round_order)
+        recommended_next_round = round_order[next_idx]
+    except ValueError:
+        recommended_next_round = "HR"
+
+    last_session = formatted_sessions[0] if formatted_sessions else None
+
+    return {
+        "recent_sessions": formatted_sessions[:10],
+        "all_sessions_count": len(formatted_sessions),
+        "last_session": last_session,
+        "trend_scores": trend_scores,
+        "current_weak_areas": weak_topics,
+        "topic_scores": topic_scores,
+        "session_count": mem.session_count if mem else len(completed_scores),
+        "average_score": avg_score,
+        "recommended_next_round": recommended_next_round,
+        "profile_confirmed": has_profile,
+        "quick_actions": {
+            "retake_same_round": {
+                "round_type": last_round,
+                "label": f"Retake {last_round} Round",
+                "route": f"/interview/setup?round={last_round}&retake=true",
+            },
+            "try_next_round": {
+                "round_type": recommended_next_round,
+                "label": f"Try {recommended_next_round} Round",
+                "route": f"/interview/setup?round={recommended_next_round}",
+            },
+            "practice_weak_areas": {
+                "topics": weak_topics[:3],
+                "label": "Focus on Weak Areas",
+                "route": f"/interview/setup?round={last_round}&focus={','.join(weak_topics[:3])}",
+            },
+        },
+    }
+
+
+@router.get("")
+def list_sessions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns candidate's full list of interview sessions with score summaries (Phase 6.3).
+    """
+    from app.services.interview_context import ensure_user_memory_updated
+    ensure_user_memory_updated(current_user.id, db)
+
+    sessions = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.user_id == current_user.id)
+        .order_by(InterviewSession.created_at.desc())
+        .all()
+    )
+
+    items = []
+    for s in sessions:
+        cfg = s.interview_config
+        res = s.result
+        items.append({
+            "id": s.id,
+            "round_type": cfg.round_type if cfg else "Technical",
+            "role": res.role if res else (getattr(current_user, "target_role", None) or "Software Engineer"),
+            "difficulty": cfg.difficulty if cfg else "Medium",
+            "status": s.status,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "overall_score": res.overall_score if res else None,
+            "content_score": res.content_score if res else None,
+            "speech_score": res.speech_score if res else None,
+            "face_score": res.face_score if res else None,
+            "classification": res.classification if res else ("COMPLETED" if s.status.lower() in ("closed", "completed") else "IN_PROGRESS"),
+            "weak_areas": res.weak_areas if res else [],
+            "has_report": s.report is not None,
+        })
+
+    return {"sessions": items}
+
+
 @router.get("/{id}", response_model=SessionOut)
 def get_session(
     id: int,
@@ -993,6 +1158,141 @@ def get_session_result(
     from app.services.score_fusion_service import process_and_persist_session_result
     result_data = process_and_persist_session_result(session_id=id, db=db)
     return result_data
+
+
+@router.get("/{id}/report")
+def get_session_report(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the final structured grounded interview report (Phase 6.1):
+    - Overall summary, strengths, gaps, per-question feedback.
+    - Grounding evidence references for every claim.
+    - Grounding audit statistics (verified claims, regenerations, dropped claims).
+    """
+    session = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Interview session #{id} not found.",
+        )
+
+    from app.services.report_generator_service import generate_and_persist_report
+    report_data = generate_and_persist_report(session_id=id, db=db)
+    return report_data
+
+
+@router.post("/{id}/generate-report")
+def trigger_report_generation(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Triggers explicit 3-pass grounded report generation for the session.
+    """
+    session = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Interview session #{id} not found.",
+        )
+
+    from app.services.report_generator_service import generate_and_persist_report
+    report_data = generate_and_persist_report(session_id=id, db=db)
+    return report_data
+
+
+@router.get("/{id}/improvement-plan")
+def get_session_improvement_plan(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns 3-5 concrete action items with practice questions and curated learning resources (Phase 6.2).
+    """
+    session = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Interview session #{id} not found.",
+        )
+
+    from app.models import SessionResult
+    from app.services.improvement_plan_service import build_improvement_plan
+
+    sess_res = db.query(SessionResult).filter(SessionResult.session_id == id).first()
+    if not sess_res:
+        from app.services.score_fusion_service import process_and_persist_session_result
+        res_dict = process_and_persist_session_result(session_id=id, db=db)
+    else:
+        res_dict = {
+            "overall_score": sess_res.overall_score,
+            "content_score": sess_res.content_score,
+            "speech_score": sess_res.speech_score,
+            "face_score": sess_res.face_score,
+            "classification": sess_res.classification,
+            "round_type": sess_res.round_type,
+            "role": sess_res.role,
+            "weak_areas": sess_res.weak_areas,
+        }
+
+    plan = build_improvement_plan(res_dict)
+    return {"session_id": id, "actions": plan}
+
+
+@router.get("/{id}/pdf")
+def get_session_pdf(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Server-side generation of publication-quality PDF report with embedded charts (Phase 6.2).
+    """
+    session = (
+        db.query(InterviewSession)
+        .filter(InterviewSession.id == id, InterviewSession.user_id == current_user.id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Interview session #{id} not found.",
+        )
+
+    from app.services.pdf_export_service import build_pdf_report
+    try:
+        pdf_bytes = build_pdf_report(session_id=id, db=db)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="intervai_report_{id}.pdf"',
+                "Content-Type": "application/pdf",
+            },
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate PDF report: {str(e)}",
+        )
+
 
 
 

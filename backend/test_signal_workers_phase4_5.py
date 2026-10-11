@@ -352,17 +352,20 @@ class TestSignalWorkersPhase4(unittest.TestCase):
             next_frame = ws.receive_json()
             self.assertIn(next_frame["type"], ("question", "avatar_speak", "redirect"))
 
-        # Wait a moment for background worker tasks to process
-        time.sleep(0.5)
+        # Wait for background worker tasks to process and flush time-series signals
+        sig_data = {}
+        for _ in range(15):
+            time.sleep(0.1)
+            sig_resp = client.get(
+                f"/session/{sess_id}/question/{q_id}/signals",
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
+            if sig_resp.status_code == 200:
+                sig_data = sig_resp.json()
+                if sig_data.get("time_series_count", 0) > 0:
+                    break
 
-        # 4. Verify debug endpoint returns parallel signals captured during answer
-        sig_resp = client.get(
-            f"/session/{sess_id}/question/{q_id}/signals",
-            headers={"Authorization": f"Bearer {self.token}"},
-        )
-        self.assertEqual(sig_resp.status_code, 200)
-        sig_data = sig_resp.json()
-        self.assertGreater(sig_data["time_series_count"], 0)
+        self.assertGreater(sig_data.get("time_series_count", 0), 0)
         self.assertIn("face_metrics", sig_data)
         self.assertIn("speech_metrics", sig_data)
 

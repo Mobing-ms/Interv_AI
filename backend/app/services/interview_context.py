@@ -32,6 +32,34 @@ MODE_PRESETS = {
 }
 
 
+def ensure_user_memory_updated(user_id: int, db: Session) -> None:
+    """
+    Ensures that any completed/closed interview sessions for this user have had their
+    score fusion and memory persistence executed before loading user context or building blueprints.
+    """
+    from app.models import InterviewSession, SessionResult
+    from app.services.score_fusion_service import process_and_persist_session_result
+
+    # Find closed sessions that lack a SessionResult record
+    unprocessed_sessions = (
+        db.query(InterviewSession)
+        .filter(
+            InterviewSession.user_id == user_id,
+            InterviewSession.status.in_(["closed", "CLOSED", "completed"]),
+        )
+        .order_by(InterviewSession.created_at.desc())
+        .all()
+    )
+
+    for sess in unprocessed_sessions:
+        has_result = db.query(SessionResult).filter(SessionResult.session_id == sess.id).first() is not None
+        if not has_result:
+            try:
+                process_and_persist_session_result(session_id=sess.id, db=db)
+            except Exception:
+                pass
+
+
 def load_user_context(user_id: int, db: Session) -> UserContextOut:
     """
     Returns the user's interview context:
@@ -42,6 +70,8 @@ def load_user_context(user_id: int, db: Session) -> UserContextOut:
     - baseline_weights: equal weights for new users, weak-area boosted for returning users
     - recommended settings and mode presets
     """
+    ensure_user_memory_updated(user_id, db)
+
     memory: Optional[UserMemory] = db.query(UserMemory).filter(UserMemory.user_id == user_id).first()
     asked_questions_rows: List[AskedQuestion] = (
         db.query(AskedQuestion)

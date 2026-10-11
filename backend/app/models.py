@@ -26,6 +26,7 @@ class User(Base):
     consents = relationship("UserConsent", back_populates="user", cascade="all, delete-orphan", order_by="desc(UserConsent.accepted_at)")
     sessions = relationship("InterviewSession", back_populates="user", cascade="all, delete-orphan", order_by="desc(InterviewSession.created_at)")
     session_results = relationship("SessionResult", back_populates="user", cascade="all, delete-orphan", order_by="desc(SessionResult.created_at)")
+    session_reports = relationship("SessionReport", back_populates="user", cascade="all, delete-orphan", order_by="desc(SessionReport.created_at)")
 
 
 class EmailOTP(Base):
@@ -214,6 +215,7 @@ class InterviewSession(Base):
     integrity_events = relationship("IntegrityEvent", back_populates="session", cascade="all, delete-orphan")
     analysis_job = relationship("SessionAnalysisJob", back_populates="session", uselist=False, cascade="all, delete-orphan")
     result = relationship("SessionResult", back_populates="session", uselist=False, cascade="all, delete-orphan")
+    report = relationship("SessionReport", back_populates="session", uselist=False, cascade="all, delete-orphan")
 
 
 class SessionCalibration(Base):
@@ -312,6 +314,24 @@ class SessionResult(Base):
 
     session = relationship("InterviewSession", back_populates="result")
     user = relationship("User", back_populates="session_results")
+
+
+class SessionReport(Base):
+    __tablename__ = "session_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("interview_sessions.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    report_data = Column(JSON, nullable=False)
+    is_grounded = Column(Boolean, default=True, nullable=False)
+    grounding_stats = Column(JSON, nullable=False)
+    regeneration_rounds = Column(Integer, default=0, nullable=False)
+    dropped_claims_count = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+    session = relationship("InterviewSession", back_populates="report")
+    user = relationship("User", back_populates="session_reports")
 
 
 

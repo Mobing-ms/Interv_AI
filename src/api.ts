@@ -553,6 +553,53 @@ export const api = {
       method: 'GET',
     });
   },
+
+  async getSessionReport(sessionId: number): Promise<SessionReportResponse> {
+    return request<SessionReportResponse>(`/session/${sessionId}/report`, {
+      method: 'GET',
+    });
+  },
+
+  async triggerReportGeneration(sessionId: number): Promise<SessionReportResponse> {
+    return request<SessionReportResponse>(`/session/${sessionId}/generate-report`, {
+      method: 'POST',
+    });
+  },
+
+  async getImprovementPlan(sessionId: number): Promise<{ session_id: number; actions: ImprovementPlanAction[] }> {
+    return request<{ session_id: number; actions: ImprovementPlanAction[] }>(`/report/${sessionId}/improvement-plan`, {
+      method: 'GET',
+    });
+  },
+
+  getReportPdfUrl(sessionId: number): string {
+    return `${API_BASE_URL}/report/${sessionId}/pdf`;
+  },
+
+  async downloadReportPdf(sessionId: number): Promise<Blob> {
+    const token = tokenStorage.getAccessToken();
+    const response = await fetch(`${API_BASE_URL}/report/${sessionId}/pdf`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to download report PDF (${response.status})`);
+    }
+    return response.blob();
+  },
+
+  async getDashboardSummary(): Promise<DashboardSummaryResponse> {
+    return request<DashboardSummaryResponse>('/session/dashboard-summary', {
+      method: 'GET',
+    });
+  },
+
+  async listUserSessions(): Promise<{ sessions: DashboardSessionItem[] }> {
+    return request<{ sessions: DashboardSessionItem[] }>('/session', {
+      method: 'GET',
+    });
+  },
 };
 
 
@@ -888,6 +935,123 @@ export interface SessionResultData {
     last_session_at?: string;
   };
   created_at: string;
+}
+
+export interface EvidenceReference {
+  type: 'transcript' | 'score' | 'deduction';
+  question_id?: number;
+  field?: string;
+  value?: any;
+  evidence_span?: string;
+}
+
+export interface ReportStrengthItem {
+  title: string;
+  claim: string;
+  evidence_topic: string;
+  question_id?: number;
+  reference?: EvidenceReference;
+}
+
+export interface ReportGapItem {
+  title: string;
+  claim: string;
+  evidence_topic: string;
+  question_id?: number;
+  reference?: EvidenceReference;
+}
+
+export interface PerQuestionFeedback {
+  question_id: number;
+  topic: string;
+  question_text: string;
+  score: number;
+  what_was_good: string;
+  what_was_missing: string;
+  sample_answer_outline: string;
+  references?: EvidenceReference[];
+}
+
+export interface GroundingAudit {
+  is_fully_grounded: boolean;
+  total_claims_verified: number;
+  initial_flagged_claims: number;
+  regeneration_rounds_performed: number;
+  dropped_unsupported_claims: number;
+  unsupported_remaining: number;
+}
+
+export interface ImprovementPlanResource {
+  title: string;
+  url: string;
+  platform: string;
+  description: string;
+}
+
+export interface ImprovementPlanAction {
+  id: string;
+  title: string;
+  topic: string;
+  priority: 'HIGH' | 'MEDIUM';
+  target_score: number;
+  current_score: number;
+  description: string;
+  practice_questions: string[];
+  resources: ImprovementPlanResource[];
+}
+
+export interface GroundedReportData {
+  overall_summary: string;
+  strengths: ReportStrengthItem[];
+  gaps: ReportGapItem[];
+  per_question_feedback: PerQuestionFeedback[];
+  improvement_plan?: ImprovementPlanAction[];
+  grounding_audit: GroundingAudit;
+}
+
+export interface SessionReportResponse {
+  id: number;
+  session_id: number;
+  user_id: number;
+  report: GroundedReportData;
+  is_grounded: boolean;
+  grounding_audit: GroundingAudit;
+  created_at: string;
+}
+
+export interface DashboardSessionItem {
+  id: number;
+  round_type: string;
+  role: string;
+  difficulty: string;
+  status: string;
+  created_at: string | null;
+  date_display: string;
+  overall_score: number | null;
+  content_score: number | null;
+  speech_score: number | null;
+  face_score: number | null;
+  classification: string | null;
+  weak_areas: any[];
+  has_report: boolean;
+}
+
+export interface DashboardSummaryResponse {
+  recent_sessions: DashboardSessionItem[];
+  all_sessions_count: number;
+  last_session: DashboardSessionItem | null;
+  trend_scores: { session_id: number; date: string; score: number; round: string }[];
+  current_weak_areas: string[];
+  topic_scores: Record<string, number>;
+  session_count: number;
+  average_score: number;
+  recommended_next_round: string;
+  profile_confirmed: boolean;
+  quick_actions: {
+    retake_same_round: { round_type: string; label: string; route: string };
+    try_next_round: { round_type: string; label: string; route: string };
+    practice_weak_areas: { topics: string[]; label: string; route: string };
+  };
 }
 
 

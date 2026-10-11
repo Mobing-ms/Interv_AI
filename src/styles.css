@@ -287,3 +287,192 @@
   gap: 4px;
 }
 
+/* =========================================================================
+   Phase 6.2 Report Page & Visual Analytics Styling
+   ========================================================================= */
+.report-charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin: 30px 0;
+}
+@media (max-width: 900px) {
+  .report-charts-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.chart-box {
+  background: #12151b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+}
+.chart-box h3 {
+  font: 600 15px 'Plus Jakarta Sans', sans-serif;
+  color: #f1f5f9;
+  margin: 0 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.trend-box {
+  background: #12151b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  padding: 22px;
+  margin-bottom: 35px;
+}
+.trend-box h3 {
+  font: 600 15px 'Plus Jakarta Sans', sans-serif;
+  color: #f1f5f9;
+  margin: 0 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plan-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-top: 20px;
+}
+.plan-card {
+  background: #12151b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 22px;
+  transition: border-color 0.2s;
+}
+.plan-card:hover {
+  border-color: rgba(99, 102, 241, 0.4);
+}
+.plan-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.plan-title {
+  font: 700 16px 'Plus Jakarta Sans', sans-serif;
+  color: #f8fafc;
+}
+.plan-priority {
+  font: 600 10px 'DM Mono', monospace;
+  padding: 4px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.5px;
+}
+.plan-priority.high {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.plan-priority.medium {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.plan-desc {
+  color: #94a3b8;
+  font-size: 13px;
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+.plan-subheading {
+  font: 600 11px 'DM Mono', monospace;
+  color: #818cf8;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin: 12px 0 6px;
+}
+.practice-q-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 14px;
+}
+.practice-q-list li {
+  color: #cbd5e1;
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 6px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.resource-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.resource-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(79, 70, 229, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  color: #c7d2fe;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+.resource-pill:hover {
+  background: rgba(79, 70, 229, 0.25);
+  border-color: #818cf8;
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.integrity-box {
+  background: #12151b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 20px;
+  margin: 30px 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+.integrity-box.clean {
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.04);
+}
+.integrity-box.flagged {
+  border-color: rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.05);
+}
+
+.grounding-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #6ee7b7;
+  font: 10px 'DM Mono', monospace;
+  margin-left: 8px;
+}
+
+.outline-box {
+  background: #0b0e14;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-family: 'DM Mono', monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #94a3b8;
+  white-space: pre-line;
+  margin-top: 10px;
+}
+
+

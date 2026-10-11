@@ -1032,12 +1032,17 @@ async def generate_question_pool_async(
     """
     total_needed = int(math.ceil(blueprint.total_question_count * multiplier))
     previously_asked_hashes = set()
+    previously_asked_texts = set()
     if user_context:
         history_qs = _extract_dict_or_attr(user_context, "history_asked_questions", []) or []
         for h in history_qs:
             h_hash = _extract_dict_or_attr(h, "question_hash", "")
             if h_hash:
                 previously_asked_hashes.add(h_hash)
+            h_text = _extract_dict_or_attr(h, "question_text", "")
+            if h_text:
+                previously_asked_texts.add(h_text)
+                previously_asked_hashes.add(compute_question_hash(h_text))
 
     # 1. Generate Raw Candidates
     raw_candidates: List[Dict[str, Any]] = []
@@ -1105,6 +1110,7 @@ Strict Instructions:
         candidates=raw_candidates,
         previously_asked_hashes=previously_asked_hashes,
         similarity_threshold=similarity_threshold,
+        previously_asked_texts=previously_asked_texts,
     )
 
     # 3. Tag, Rank and Attach Follow-Up Templates

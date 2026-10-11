@@ -1,7 +1,7 @@
 import re
 import math
 import hashlib
-from typing import List, Dict, Any, Set, Tuple
+from typing import List, Dict, Any, Set, Tuple, Optional
 
 
 def normalize_question_text(text: str) -> str:
@@ -56,6 +56,7 @@ def deduplicate_questions(
     candidates: List[Dict[str, Any]],
     previously_asked_hashes: Set[str],
     similarity_threshold: float = 0.82,
+    previously_asked_texts: Optional[Set[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     Dedupes a candidate question pool:
@@ -69,11 +70,30 @@ def deduplicate_questions(
     history_filtered = []
     removed_history_count = 0
 
+    norm_history_texts = {
+        normalize_question_text(t) for t in (previously_asked_texts or set()) if t
+    }
+
     for q in candidates:
-        q_hash = q.get("question_hash") or compute_question_hash(q.get("text", ""))
+        text = q.get("text", "")
+        norm_text = normalize_question_text(text)
+        q_hash = q.get("question_hash") or compute_question_hash(text)
         q["question_hash"] = q_hash
 
-        if q_hash in previously_asked_hashes:
+        # Compute full 64-char sha256 as well
+        full_hash = hashlib.sha256(norm_text.encode("utf-8")).hexdigest()
+        raw_full_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+        # Check all hash variations and normalized text
+        is_already_asked = (
+            q_hash in previously_asked_hashes
+            or full_hash in previously_asked_hashes
+            or raw_full_hash in previously_asked_hashes
+            or any(h.startswith(q_hash) or q_hash.startswith(h) for h in previously_asked_hashes if h)
+            or (norm_text and norm_text in norm_history_texts)
+        )
+
+        if is_already_asked:
             removed_history_count += 1
             continue
         history_filtered.append(q)

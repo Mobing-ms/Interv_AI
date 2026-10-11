@@ -32,6 +32,7 @@ from app.models import (
     IntegrityEvent,
 )
 from app.services.scoring_engine import compute_session_scores
+from app.services.question_dedupe import compute_question_hash, normalize_question_text
 
 logger = logging.getLogger("intervai.score_fusion")
 
@@ -600,7 +601,8 @@ def execute_u_memory_update(
         topic = str(q.get("topic") or "General").strip()
         q_score = float(q.get("fused_score", overall_score))
 
-        q_hash = hashlib.sha256(q_text.encode("utf-8")).hexdigest()
+        norm_text = normalize_question_text(q_text)
+        q_hash = hashlib.sha256(norm_text.encode("utf-8")).hexdigest()
 
         asked_entry = AskedQuestion(
             user_id=user_id,

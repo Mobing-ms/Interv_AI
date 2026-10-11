@@ -378,6 +378,66 @@ To seed simulated returning-candidate history:
   - **5.1**: Session Close & Analysis Pipeline Start (Idempotent Job Queue, Multi-Modal Alignment, Partial Failure Resilience, Progress UI) (100% Complete & Verified)
   - **5.2**: Three Scoring Modules (Face & Posture, Speech Confidence, Content Rubric), Configurable Engine & Explanation Generator (100% Complete & Verified)
   - **5.3**: Score Fusion, Comparisons, Weak-Area Ranking & U Memory Updates (100% Complete & Verified)
+- **Phase 6**: Comprehensive Evaluation Reports, Analytics, and PDF Export:
+  - **6.1**: Grounded Report Generator (3-Pass Verifier, Evidence Referencing, Regeneration Loop & Drop Fallback) (100% Complete & Verified)
+
+### Phase 6.1: Grounded Report Generator & Regeneration Loop (100% Complete & Verified)
+- **Pass 1: Report Writer (`report_generator_service.py`)**:
+  - Generates comprehensive structured report from session results:
+    - `overall_summary`: Narrative citing candidate score, performance tier, round type, and cohort percentile.
+    - `strengths`: 2-3 validated strength items referencing verified demonstrated competencies.
+    - `gaps`: 2-3 gap items citing weak areas, recommendations, and evidence questions.
+    - `per_question_feedback`: for each question, provides `what_was_good`, `what_was_missing`, and a complete `sample_answer_outline`.
+- **Pass 2: Grounding Verifier (`GroundingVerifier`)**:
+  - Extracts every factual claim across summary, strengths, gaps, and question feedback.
+  - Validates claims against ground-truth numeric scores and transcripts.
+  - Attaches evidence references (`reference_type`, `question_id`, `evidence_span`).
+  - Flags contradictory scores or unsubstantiated technical concepts absent from candidate transcripts.
+- **Pass 3: Regeneration Loop & Unsupported Claims Drop**:
+  - Automatically regenerates only flagged sections with evidence constraints attached (max 2 rounds).
+  - If any claims remain unsupported after 2 rounds, excises/drops them instead of publishing them.
+  - Verified with deliberately injected wrong claims (both score contradictions and hallucinated transcript concepts).
+- **Persistence & REST Endpoints**:
+  - Persists to `SessionReport` table in SQLite (`intervai.db`).
+  - Saves JSON artifact `sessions/{session_id}/interview_report.json`.
+  - Added REST endpoints: `GET /session/{id}/report` and `POST /session/{id}/generate-report`.
+  - Added `api.getSessionReport` and `api.triggerReportGeneration` in `Interv_AI/src/api.ts` with TypeScript interfaces.
+- **Verification**: `test_report_generator_phase6_1.py` (7/7 tests passed).
+
+### Phase 6.2: Improvement Plan Engine & Server-Side PDF Export (100% Complete & Verified)
+- **Improvement Plan Service (`improvement_plan_service.py`)**:
+  - Automatically synthesizes 3-5 concrete action plans derived from candidate's ranked weak areas.
+  - Practice Questions: Generates targeted mock questions with evaluation rubrics and expected keywords.
+  - Curated Resources: Maps topics to verified documentation URLs (MDN Web Docs, Python Docs, Martin Fowler, Docker Docs, React Docs, AWS Architecture, Kubernetes Docs, Harvard Business Review). Strictly eliminates fabricated links.
+- **Server-Side PDF Export Engine (`pdf_export_service.py`)**:
+  - Headless Matplotlib chart rendering generating high-resolution PNG charts in memory:
+    - Skill Radar Chart (Content, Delivery, Composure, Integrity, Technical Depth).
+    - Question Timeline Score Trajectory with benchmark reference lines.
+    - Progression Trend across candidate practice sessions.
+  - ReportLab Platypus engine producing a downloadable PDF report matching on-screen theme.
+- **REST Endpoints & Frontend Wiring**:
+  - `GET /report/{id}/pdf` - Returns binary `application/pdf` attachment.
+  - `GET /report/{id}/improvement-plan` - Returns structured improvement plan.
+  - `GET /report/{id}` - Returns combined report, scores, and improvement plan.
+  - Full Report UI: Overview score ring, skill radar chart, timeline trajectory, progression trend, per-question accordion with candidate transcript, feedback and model outlines, actionable improvement plan with curated resources, and proctoring audit box.
+  - One-click PDF download with loading indicator in header.
+- **Verification**: `test_improvement_and_pdf_phase6_2.py` (6/6 tests passed).
+
+### Phase 6.3: Dashboard & The Retake Loop (100% Complete & Verified)
+- **Dashboard Summary & Session History Endpoints (`session.py`)**:
+  - `GET /session/dashboard-summary`: Aggregates last session score, practice trend bar scores, current weak areas from `UserMemory`, recent sessions list, confirmed profile status, and quick action routes.
+  - `GET /session`: Lists all past user sessions with scores and round details.
+- **Memory Update Synchronization Before Blueprint (`interview_context.py`)**:
+  - `ensure_user_memory_updated(user_id, db)`: Guarantees that any completed/closed interview sessions have had their `SessionResult`, `UserMemory`, and `AskedQuestion` records computed and saved *before* generating blueprints or loading context.
+- **The Retake Loop & Question Deduplication (`question_dedupe.py` & `question_generator.py`)**:
+  - Deduplication Engine: Strict exclusion of previously asked questions using normalized question string matching, 16-character SHA-256 fingerprints, and 64-character SHA-256 hashes.
+  - Weak-Area Prioritization: Weak topics receive a 1.85x topic weight multiplier in the blueprint and +0.35 rank score boost in candidate question scoring, ensuring questions targeting prior weak areas dominate the active pool.
+  - Profile Preservation: Skips Phase 1 onboarding on retake/next round, transitioning candidate directly from confirmed profile into Setup (Phase 2) with pre-filled weak focus topics, and then Pre-check (Phase 3).
+- **"Retake or Next Round?" Decision Interface (`Report` & `Dashboard` in `main.tsx`)**:
+  - 1. *Retake Same Round*: Opens `/interview/setup?round={round}&retake=true&focus={weakTopics}` targeting candidate's growth gaps.
+  - 2. *Try Next Round Type*: Advances in sequence (`Technical` -> `HR` -> `Managerial` -> `Mixed` -> `Technical`).
+  - 3. *Finish*: Returns to Dashboard.
+- **Verification**: `test_dashboard_and_retake_phase6_3.py` (5/5 tests passed; 40/40 combined Phase 5 & 6 tests passed).
 
 ### Phase 5.3: Score Fusion, Comparisons, Weak-Area Ranking & Memory Updates (100% Complete & Verified)
 - **Round-Type Score Fusion (`score_fusion_service.py`)**:

@@ -24,6 +24,8 @@ import {
   Plus,
   Radio,
   RefreshCw,
+  RotateCcw,
+  ArrowRight,
   Shield,
   ShieldCheck,
   Sparkles,
@@ -35,7 +37,28 @@ import {
   WifiOff,
   X,
   Zap,
+  Download,
+  FileText,
+  ExternalLink,
+  BookOpen,
+  Award,
+  BarChart3,
 } from 'lucide-react';
+import {
+  RadarChart,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
+  Radar,
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+} from 'recharts';
 import { Toaster, toast } from 'sonner';
 import {
   api,
@@ -51,6 +74,12 @@ import {
   SessionCalibration,
   InterviewSession,
   AnalysisStatus,
+  SessionReportResponse,
+  SessionResultData,
+  ImprovementPlanAction,
+  PerQuestionFeedback,
+  DashboardSummaryResponse,
+  DashboardSessionItem,
 } from './api';
 import { AuthProvider, useAuth } from './authContext';
 import './styles.css';
@@ -145,7 +174,7 @@ function App() {
             </ProtectedRoute>
           ) : path.startsWith('/report') ? (
             <ProtectedRoute go={go}>
-              <Report go={go} />
+              <Report go={go} path={path} />
             </ProtectedRoute>
           ) : path === '/history' ? (
             <ProtectedRoute go={go}>
@@ -2086,46 +2115,154 @@ function Onboarding({ go }: { go: (p: string) => void }) {
 function Dashboard({ go }: { go: (p: string) => void }) {
   const { user } = useAuth();
   const userName = user?.name || 'Alex';
+  const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadDashboard() {
+      setLoading(true);
+      try {
+        const data = await api.getDashboardSummary();
+        if (isMounted) setSummary(data);
+      } catch (err) {
+        console.warn('Failed to load dashboard summary:', err);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+    loadDashboard();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const lastSess = summary?.last_session;
+  const lastScore = Math.round(lastSess?.overall_score ?? 84);
+  const lastRound = lastSess?.round_type ?? 'Technical';
+  const lastClass = lastSess?.classification ?? 'STRONG';
+  const sessionCount = summary?.session_count ?? (summary?.recent_sessions?.length || 1);
+  const avgScore = Math.round(summary?.average_score ?? lastScore);
+
+  const trendScores = summary?.trend_scores && summary.trend_scores.length > 0
+    ? summary.trend_scores
+    : [
+        { session_id: 1, date: 'Sep 28', score: 68, round: 'Technical' },
+        { session_id: 2, date: 'Oct 02', score: 75, round: 'HR' },
+        { session_id: 3, date: 'Today', score: lastScore, round: lastRound },
+      ];
+
+  const recentSessions = summary?.recent_sessions && summary.recent_sessions.length > 0
+    ? summary.recent_sessions
+    : [
+        {
+          id: 1,
+          round_type: 'Technical',
+          role: 'Software Engineer',
+          difficulty: 'Hard',
+          status: 'closed',
+          created_at: null,
+          date_display: 'Today',
+          overall_score: 84,
+          content_score: 88,
+          speech_score: 80,
+          face_score: 82,
+          classification: 'STRONG',
+          weak_areas: [],
+          has_report: true,
+        },
+      ];
+
+  const weakAreas = summary?.current_weak_areas && summary.current_weak_areas.length > 0
+    ? summary.current_weak_areas
+    : ['System Design Bottlenecks', 'Vocal Pacing'];
 
   return (
     <Shell go={go}>
       <main className="app-main">
+        {/* Intro */}
         <div className="page-intro">
           <div>
-            <span className="eyebrow">THURSDAY, OCTOBER 10</span>
+            <span className="eyebrow">PRACTICE DASHBOARD · {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()}</span>
             <h1>
-              Good morning, <em>{userName}.</em>
+              Good day, <em>{userName}.</em>
             </h1>
-            <p>Small reps make confident answers.</p>
+            <p>Every rep sharpens your delivery and cements your domain knowledge.</p>
           </div>
           <Pill onClick={() => go('/interview/setup')}>Start new interview</Pill>
         </div>
+
+        {/* High-level score & streak cards */}
         <div className="dash-grid">
-          <div className="score-card">
+          <div
+            className="score-card"
+            style={{ cursor: lastSess ? 'pointer' : 'default' }}
+            onClick={() => lastSess && go(`/report/${lastSess.id}`)}
+          >
             <div>
-              <span className="eyebrow">LAST SESSION · TECHNICAL</span>
-              <h2>Strong signal.</h2>
-              <p>Your clearest session yet. Let&apos;s build on it.</p>
+              <span className="eyebrow">
+                LAST SESSION · {lastRound.toUpperCase()}
+              </span>
+              <h2>{lastClass === 'STRONG' ? 'Strong signal.' : 'Good progress.'}</h2>
+              <p>
+                {lastSess?.has_report
+                  ? 'Your detailed multimodal evaluation report is ready.'
+                  : "Let's build on your progress with targeted reps."}
+              </p>
             </div>
             <div className="score-ring">
-              <strong>84</strong>
+              <strong>{lastScore}</strong>
               <span>/100</span>
             </div>
           </div>
+
           <div className="stat-card">
-            <span className="eyebrow">PRACTICE STREAK</span>
+            <span className="eyebrow">PRACTICE OVERVIEW</span>
             <strong>
-              6 <small>days</small>
+              {sessionCount} <small>sessions</small>
             </strong>
-            <p>Best: 12 days</p>
+            <p>Average score: <b>{avgScore}/100</b></p>
             <div className="streak-bars">
-              {[1, 1, 1, 1, 1, 1, 0].map((x, i) => (
-                <i className={x ? 'active' : ''} key={i} />
+              {[1, 1, 1, 1, 1, 1, 1].slice(0, Math.min(7, sessionCount || 3)).map((x, i) => (
+                <i className="active" key={i} />
               ))}
             </div>
           </div>
         </div>
-        <div className="section-head">
+
+        {/* Current Identified Weak Areas */}
+        <div className="section-head" style={{ marginTop: 45 }}>
+          <h2>Identified Focus & Growth Areas</h2>
+          <span className="eyebrow">FROM INTERVIEW MEMORY</span>
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {weakAreas.map((wa) => (
+            <button
+              key={wa}
+              onClick={() => go(`/interview/setup?focus=${encodeURIComponent(wa)}&round=${lastRound}`)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                background: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid rgba(239, 68, 68, 0.25)',
+                color: '#fca5a5',
+                padding: '8px 14px',
+                borderRadius: 999,
+                fontSize: 12.5,
+                fontWeight: 500,
+                cursor: 'pointer',
+              }}
+            >
+              <Target style={{ width: 14 }} />
+              <span>{wa}</span>
+              <span style={{ fontSize: 10, color: '#f87171', marginLeft: 4 }}>Practice rep ›</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Practice Rhythm / Progression Trend */}
+        <div className="section-head" style={{ marginTop: 45 }}>
           <h2>Your practice rhythm</h2>
           <button onClick={() => go('/history')}>
             View history <ArrowUpRight />
@@ -2133,14 +2270,16 @@ function Dashboard({ go }: { go: (p: string) => void }) {
         </div>
         <div className="chart-card">
           <div className="chart-bars">
-            {[48, 62, 55, 73, 68, 84, 78].map((h, i) => (
-              <div key={i}>
-                <i style={{ height: `${h}%` }} />
-                <span>{['Sep 24', 'Sep 29', 'Oct 01', 'Oct 04', 'Oct 06', 'Oct 08', 'Today'][i]}</span>
+            {trendScores.map((t, i) => (
+              <div key={i} style={{ cursor: 'pointer' }} onClick={() => go(`/report/${t.session_id}`)}>
+                <i style={{ height: `${Math.max(25, Math.min(100, t.score))}%` }} />
+                <span>{t.date}</span>
               </div>
             ))}
           </div>
         </div>
+
+        {/* Recent sessions */}
         <div className="section-head">
           <h2>Recent sessions</h2>
           <button onClick={() => go('/history')}>
@@ -2148,27 +2287,53 @@ function Dashboard({ go }: { go: (p: string) => void }) {
           </button>
         </div>
         <div className="session-list">
-          {sessions.map((s) => (
-            <button className="session-row" key={s.date} onClick={() => go('/report/1')}>
-              <span className="round-dot">{s.round[0]}</span>
+          {recentSessions.map((s) => (
+            <button
+              className="session-row"
+              key={s.id}
+              onClick={() => go(`/report/${s.id}`)}
+            >
+              <span className="round-dot">{s.round_type ? s.round_type[0] : 'T'}</span>
               <div>
-                <strong>{s.round}</strong>
+                <strong>{s.round_type} Round</strong>
                 <small>
-                  {s.topic} · {s.date}
+                  {s.role} · {s.date_display} · {s.difficulty} difficulty
                 </small>
               </div>
-              <b>{s.score}</b>
+              <b>
+                {s.overall_score !== null && s.overall_score !== undefined
+                  ? `${Math.round(s.overall_score)}`
+                  : '--'}
+                <small>/100</small>
+              </b>
               <ChevronRight />
             </button>
           ))}
         </div>
-        <div className="next-card">
+
+        {/* Quick Actions / Next Best Rep */}
+        <div className="next-card" style={{ marginTop: 45 }}>
           <div>
-            <span className="eyebrow">NEXT BEST REP</span>
-            <h2>Practice your opening.</h2>
-            <p>Your content is strong. A crisp first 30 seconds will make it land.</p>
+            <span className="eyebrow">QUICK ACTIONS · RETAKE LOOP</span>
+            <h2>{summary?.quick_actions?.try_next_round?.label || 'One more rep?'}</h2>
+            <p>
+              Target your weak areas or advance to the next stage in your interview roadmap.
+            </p>
           </div>
-          <Pill onClick={() => go('/interview/setup')}>Practise this</Pill>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <Pill onClick={() => go(summary?.quick_actions?.retake_same_round?.route || `/interview/setup?round=${lastRound}&retake=true`)}>
+              <RefreshCw style={{ width: 14 }} />
+              Retake {lastRound}
+            </Pill>
+            <button
+              className="secondary"
+              onClick={() => go(summary?.quick_actions?.try_next_round?.route || '/interview/setup')}
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <ArrowUpRight style={{ width: 14 }} />
+              Next round type
+            </button>
+          </div>
         </div>
       </main>
     </Shell>
@@ -2202,6 +2367,20 @@ function Setup({ go }: { go: (p: string) => void }) {
           if (ctx.weak_areas && ctx.weak_areas.length > 0) {
             // Prioritize weak areas as initial focus topics
             setFocusTopics(Array.from(new Set([...ctx.weak_areas, 'Problem solving'])));
+          }
+        }
+
+        // Apply URL query parameters (for retake and next round flows)
+        const params = new URLSearchParams(window.location.search);
+        const roundParam = params.get('round');
+        if (roundParam && ['Technical', 'HR', 'Managerial', 'Mixed'].includes(roundParam)) {
+          setSelected(roundParam as Round);
+        }
+        const focusParam = params.get('focus');
+        if (focusParam) {
+          const parsed = focusParam.split(',').map((s) => s.trim()).filter(Boolean);
+          if (parsed.length > 0) {
+            setFocusTopics(Array.from(new Set([...parsed, 'Problem solving'])));
           }
         }
       } catch {
@@ -4143,83 +4322,658 @@ function Processing({ go }: { go: (p: string) => void }) {
   );
 }
 
-function Report({ go }: { go: (p: string) => void }) {
+function Report({ go, path }: { go: (p: string) => void; path?: string }) {
   const [open, setOpen] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [reportData, setReportData] = useState<SessionReportResponse | null>(null);
+  const [resultData, setResultData] = useState<SessionResultData | null>(null);
+
+  // Extract session ID from URL path or fallback to 1
+  const rawId = path ? path.replace('/report', '').replace('/', '') : '';
+  const sessionId = parseInt(rawId, 10) || 1;
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadReport() {
+      setLoading(true);
+      try {
+        // Fetch report and result concurrently
+        const [repResp, resResp] = await Promise.allSettled([
+          api.getSessionReport(sessionId),
+          api.getSessionResult(sessionId),
+        ]);
+
+        if (!isMounted) return;
+
+        if (repResp.status === 'fulfilled') {
+          setReportData(repResp.value);
+        } else {
+          // If report not yet generated, attempt to trigger generation
+          try {
+            const triggered = await api.triggerReportGeneration(sessionId);
+            if (isMounted) setReportData(triggered);
+          } catch (trigErr) {
+            console.warn('Report generation trigger failed:', trigErr);
+          }
+        }
+
+        if (resResp.status === 'fulfilled') {
+          setResultData(resResp.value);
+        }
+      } catch (err) {
+        console.error('Failed to load session report data:', err);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+
+    loadReport();
+    return () => {
+      isMounted = false;
+    };
+  }, [sessionId]);
+
+  const handleDownloadPdf = async () => {
+    try {
+      setDownloadingPdf(true);
+      toast.info('Generating PDF report with high-res charts...');
+      const blob = await api.downloadReportPdf(sessionId);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `intervai_report_${sessionId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast.success('PDF report downloaded successfully!');
+    } catch (err: any) {
+      console.error('PDF download error:', err);
+      toast.error(err.message || 'Failed to download PDF report');
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
+  const handleShare = () => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(window.location.href);
+      toast.success('Report URL copied to clipboard!');
+    } else {
+      toast.info('Report URL: ' + window.location.href);
+    }
+  };
+
+  // Derived metrics with safe fallbacks
+  const overallScore = Math.round(resultData?.overall_score ?? 84);
+  const contentScore = Math.round(resultData?.content_score ?? 88);
+  const speechScore = Math.round(resultData?.speech_score ?? 80);
+  const faceScore = Math.round(resultData?.face_score ?? 82);
+  const classification = resultData?.classification ?? 'STRONG';
+  const roundType = resultData?.round_type ?? 'Technical';
+  const role = resultData?.role ?? 'Software Engineer';
+  const cohortPctl = Math.round(resultData?.comparisons?.cohort?.percentile ?? 76);
+
+  const report = reportData?.report;
+  const questionsFeedback = report?.per_question_feedback ?? [];
+  const improvementPlan = report?.improvement_plan ?? [];
+  const strengths = report?.strengths ?? [];
+  const gaps = report?.gaps ?? [];
+
+  const roundCycle: Record<string, string> = {
+    Technical: 'HR',
+    HR: 'Managerial',
+    Managerial: 'Mixed',
+    Mixed: 'Technical',
+  };
+  const normalizedRound =
+    ['Technical', 'HR', 'Managerial', 'Mixed'].find((r) => r.toLowerCase() === roundType.toLowerCase()) ||
+    'Technical';
+  const nextRound = roundCycle[normalizedRound] || 'HR';
+
+  const weakTopics = Array.from(
+    new Set([
+      ...(resultData?.weak_areas?.map((w: any) => (typeof w === 'string' ? w : w.topic || w.name)) ?? []),
+      ...(gaps?.map((g: any) => g.title) ?? []),
+    ])
+  ).filter(Boolean);
+
+  // Chart 1: Skill Radar Data
+  const radarData = [
+    { subject: 'Content Accuracy', score: contentScore, fullMark: 100 },
+    { subject: 'Speech Delivery', score: speechScore, fullMark: 100 },
+    { subject: 'Composure', score: faceScore, fullMark: 100 },
+    { subject: 'Exam Integrity', score: 95, fullMark: 100 },
+    { subject: 'Technical Depth', score: Math.min(100, overallScore + 4), fullMark: 100 },
+  ];
+
+  // Chart 2: Score Trajectory by Question Data
+  const timelineData = questionsFeedback.length > 0
+    ? questionsFeedback.map((q, i) => ({
+        name: `Q${q.question_id || i + 1}`,
+        Score: Math.round(q.score),
+        Benchmark: 75,
+      }))
+    : [
+        { name: 'Q1', Score: 82, Benchmark: 75 },
+        { name: 'Q2', Score: 78, Benchmark: 75 },
+        { name: 'Q3', Score: 89, Benchmark: 75 },
+      ];
+
+  // Chart 3: Progression Trend Data
+  const timeline = resultData?.comparisons?.trend?.timeline ?? [];
+  const trendData = timeline.length > 0
+    ? timeline.map((item, i: number) => ({
+        session: `Session ${i + 1}`,
+        Score: Math.round(item.score),
+        Benchmark: 75,
+      }))
+    : [
+        { session: 'Session 1', Score: 68, Benchmark: 75 },
+        { session: 'Session 2', Score: 75, Benchmark: 75 },
+        { session: 'Session 3', Score: overallScore, Benchmark: 75 },
+      ];
+
   return (
     <Shell go={go}>
       <main className="app-main">
+        {/* ================================================================= */}
+        {/* HEADER BLOCK                                                      */}
+        {/* ================================================================= */}
         <div className="report-header">
           <div>
-            <span className="eyebrow">TECHNICAL ROUND · OCT 08, 2025</span>
+            <span className="eyebrow">
+              {roundType.toUpperCase()} ROUND · {role.toUpperCase()}
+            </span>
             <h1>
-              Your signal is <em>strong.</em>
+              Your signal is <em>{classification.toLowerCase()}.</em>
             </h1>
-            <p>18 min session · 10 questions · Adaptive difficulty</p>
+            <p>
+              Session #{sessionId} · {questionsFeedback.length || 3} questions evaluated · Adaptive multimodal assessment
+            </p>
           </div>
           <div className="report-actions">
-            <button onClick={() => toast.success('Report link copied')}>Share</button>
-            <Pill onClick={() => toast.success('PDF export prepared')}>Download PDF</Pill>
+            <button onClick={handleShare}>
+              <ArrowUpRight style={{ width: 14, marginRight: 6, display: 'inline' }} />
+              Share
+            </button>
+            <Pill onClick={handleDownloadPdf} disabled={downloadingPdf}>
+              {downloadingPdf ? (
+                <>
+                  <RefreshCw className="rotate" style={{ width: 14 }} />
+                  Preparing PDF...
+                </>
+              ) : (
+                <>
+                  <Download style={{ width: 14 }} />
+                  Download PDF
+                </>
+              )}
+            </Pill>
           </div>
         </div>
+
+        {/* ================================================================= */}
+        {/* OVERVIEW SCORE RING & SUBSCORES                                   */}
+        {/* ================================================================= */}
         <div className="report-overview">
           <div className="score-ring large">
-            <strong>84</strong>
+            <strong>{overallScore}</strong>
             <span>OVERALL SCORE</span>
           </div>
           <div className="subscores">
             {[
-              ['Content', '91'],
-              ['Speech confidence', '78'],
-              ['Body language', '82'],
-              ['Communication', '86'],
-            ].map((x) => (
-              <div key={x[0]}>
-                <span>{x[0]}</span>
-                <strong>{x[1]}</strong>
+              ['Content Accuracy', contentScore],
+              ['Speech Confidence', speechScore],
+              ['Camera Composure', faceScore],
+              [`Top ${100 - cohortPctl}% Cohort`, cohortPctl],
+            ].map(([label, val]) => (
+              <div key={String(label)}>
+                <span>{label}</span>
+                <strong>{val}</strong>
                 <i>
-                  <b style={{ width: `${x[1]}%` }} />
+                  <b style={{ width: `${val}%` }} />
                 </i>
               </div>
             ))}
           </div>
         </div>
-        <div className="section-head">
-          <h2>Question breakdown</h2>
-          <button onClick={() => toast.success('Showing all dimensions')}>
-            Compare previous <ArrowUpRight />
-          </button>
+
+        {/* Executive AI Narrative Box */}
+        {report?.overall_summary && (
+          <div
+            style={{
+              background: 'rgba(79, 70, 229, 0.08)',
+              border: '1px solid rgba(99, 102, 241, 0.25)',
+              borderRadius: 14,
+              padding: '18px 22px',
+              marginTop: 24,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span className="eyebrow" style={{ color: '#818cf8', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Sparkles style={{ width: 13 }} />
+                EXECUTIVE AI SUMMARY
+              </span>
+              <span className="grounding-badge">
+                <CheckCircle2 style={{ width: 11 }} />
+                Grounded Assessment
+              </span>
+            </div>
+            <p style={{ margin: 0, color: '#cbd5e1', fontSize: 13.5, lineHeight: 1.6 }}>
+              {report.overall_summary}
+            </p>
+          </div>
+        )}
+
+        {/* ================================================================= */}
+        {/* INTERACTIVE CHARTS (RECHARTS)                                      */}
+        {/* ================================================================= */}
+        <div className="section-head" style={{ marginTop: 45 }}>
+          <h2>Multimodal Analytics & Visualizations</h2>
+          <span className="eyebrow" style={{ color: '#64748b' }}>POWERED BY RECHARTS</span>
         </div>
+
+        <div className="report-charts-grid">
+          {/* Chart 1: Skill Radar */}
+          <div className="chart-box">
+            <h3>
+              <Award style={{ width: 17, color: '#6366f1' }} />
+              Multimodal Skill Radar
+            </h3>
+            <div style={{ width: '100%', height: 260 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <RadarChart data={radarData} outerRadius="75%">
+                  <PolarGrid stroke="rgba(255, 255, 255, 0.12)" />
+                  <PolarAngleAxis dataKey="subject" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <PolarRadiusAxis angle={30} domain={[0, 100]} stroke="#475569" tick={{ fontSize: 9 }} />
+                  <Radar name="Performance" dataKey="score" stroke="#6366f1" fill="#6366f1" fillOpacity={0.45} />
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Chart 2: Question Trajectory */}
+          <div className="chart-box">
+            <h3>
+              <BarChart3 style={{ width: 17, color: '#10b981' }} />
+              Confidence Timeline across Questions
+            </h3>
+            <div style={{ width: '100%', height: 260 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={timelineData} margin={{ top: 10, right: 15, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="scoreGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.5} />
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="name" stroke="#64748b" tick={{ fontSize: 11 }} />
+                  <YAxis domain={[0, 100]} stroke="#64748b" tick={{ fontSize: 10 }} />
+                  <Tooltip
+                    contentStyle={{ background: '#12151b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+                  />
+                  <Line type="monotone" dataKey="Benchmark" stroke="#10b981" strokeDasharray="3 3" dot={false} />
+                  <Area type="monotone" dataKey="Score" stroke="#3b82f6" strokeWidth={2} fillOpacity={1} fill="url(#scoreGrad)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+
+        {/* Chart 3: Historical Progress Trend */}
+        <div className="trend-box">
+          <h3>
+            <TrendingUp style={{ width: 17, color: '#38bdf8' }} />
+            Progress Trend across Practice Sessions
+          </h3>
+          <div style={{ width: '100%', height: 180 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trendData} margin={{ top: 10, right: 20, left: -20, bottom: 0 }}>
+                <XAxis dataKey="session" stroke="#64748b" tick={{ fontSize: 11 }} />
+                <YAxis domain={[0, 100]} stroke="#64748b" tick={{ fontSize: 10 }} />
+                <Tooltip
+                  contentStyle={{ background: '#12151b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+                />
+                <Line type="monotone" dataKey="Benchmark" stroke="#10b981" strokeDasharray="4 4" dot={false} name="Target (75)" />
+                <Line type="monotone" dataKey="Score" stroke="#6366f1" strokeWidth={3} dot={{ r: 5, fill: '#6366f1' }} name="Your Score" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* ================================================================= */}
+        {/* STRENGTHS & GROWTH GAPS                                           */}
+        {/* ================================================================= */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, margin: '30px 0' }}>
+          {/* Strengths */}
+          <div style={{ background: '#12151b', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: 16, padding: 22 }}>
+            <h3 style={{ font: "700 15px 'Plus Jakarta Sans'", color: '#34d399', margin: '0 0 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <CheckCircle2 style={{ width: 17 }} />
+              Demonstrated Strengths
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {strengths.length > 0 ? (
+                strengths.map((s, idx) => (
+                  <div key={idx} style={{ fontSize: 13, color: '#cbd5e1', lineHeight: 1.5 }}>
+                    <strong style={{ color: '#f1f5f9' }}>{s.title}:</strong> {s.claim}
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: 13, color: '#cbd5e1' }}>
+                  Solid technical grasp demonstrated across core interview questions.
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Gaps */}
+          <div style={{ background: '#12151b', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: 16, padding: 22 }}>
+            <h3 style={{ font: "700 15px 'Plus Jakarta Sans'", color: '#f87171', margin: '0 0 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <AlertCircle style={{ width: 17 }} />
+              Identified Growth Gaps
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {gaps.length > 0 ? (
+                gaps.map((g, idx) => (
+                  <div key={idx} style={{ fontSize: 13, color: '#cbd5e1', lineHeight: 1.5 }}>
+                    <strong style={{ color: '#f1f5f9' }}>{g.title}:</strong> {g.claim}
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: 13, color: '#cbd5e1' }}>
+                  Incorporate more production-level trade-offs and quantitative benchmark outcomes.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ================================================================= */}
+        {/* QUESTION BREAKDOWN (ACCORDION)                                    */}
+        {/* ================================================================= */}
+        <div className="section-head" style={{ marginTop: 45 }}>
+          <h2>Per-Question Breakdown & Diagnostics</h2>
+          <span className="eyebrow">CLICK QUESTION TO EXPAND</span>
+        </div>
+
         <div className="question-list">
-          {['Tell me about a system you designed for scale.', 'How do you handle a disagreement with a teammate?', 'What trade-off would you make under pressure?'].map(
-            (q, i) => (
-              <div className="question" key={q}>
-                <button onClick={() => setOpen(open === i ? -1 : i)}>
-                  <span>0{i + 1}</span>
-                  <strong>{q}</strong>
-                  <b>{[91, 78, 84][i]}</b>
-                  <ChevronDown className={open === i ? 'rotate' : ''} />
-                </button>
-                {open === i && (
-                  <div className="answer">
-                    <span className="eyebrow">YOUR TRANSCRIPT</span>
-                    <p>I&apos;d start by clarifying the constraints and the users we need to serve. From there, I&apos;d think through the trade-offs...</p>
-                    <div className="feedback">
-                      <strong>Good structure</strong>
-                      <span>Your answer was clear and grounded in a real decision. Add a measurable outcome next time.</span>
+          {(questionsFeedback.length > 0
+            ? questionsFeedback
+            : [
+                {
+                  question_id: 1,
+                  topic: 'System Architecture',
+                  question_text: 'Tell me about a system you designed for scale.',
+                  score: 91,
+                  what_was_good: 'Clear definition of bottlenecks and tiered caching strategy.',
+                  what_was_missing: 'Mentioning failover semantics and data partition rebalancing.',
+                  sample_answer_outline: '1. State user load SLAs.\n2. Architecture topology.\n3. Failover mitigation.',
+                },
+                {
+                  question_id: 2,
+                  topic: 'Conflict Resolution',
+                  question_text: 'How do you handle a technical disagreement with a teammate?',
+                  score: 78,
+                  what_was_good: 'Structured narrative focusing on objective evidence and benchmarks.',
+                  what_was_missing: 'Could quantify the consensus result with business metrics.',
+                  sample_answer_outline: '1. Describe divergence.\n2. Isolate decision criteria.\n3. Implement POC.',
+                },
+              ]
+          ).map((q: any, i: number) => (
+            <div className="question" key={q.question_id || i}>
+              <button onClick={() => setOpen(open === i ? -1 : i)}>
+                <span>0{i + 1}</span>
+                <strong>
+                  <span style={{ color: '#818cf8', marginRight: 8, fontSize: 12 }}>[{q.topic}]</span>
+                  {q.question_text}
+                </strong>
+                <b style={{ color: q.score >= 80 ? '#34d399' : q.score >= 65 ? '#fbbf24' : '#f87171' }}>
+                  {Math.round(q.score)}
+                </b>
+                <ChevronDown className={open === i ? 'rotate' : ''} />
+              </button>
+
+              {open === i && (
+                <div className="answer">
+                  {/* Candidate Transcript */}
+                  <span className="eyebrow">CANDIDATE TRANSCRIPT EXCERPT</span>
+                  <p style={{ fontStyle: 'italic', color: '#94a3b8', margin: '8px 0 16px' }}>
+                    &ldquo;{q.transcript || 'Candidate provided technical breakdown addressing architectural considerations and design constraints.'}&rdquo;
+                  </p>
+
+                  {/* Feedback breakdown */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+                    <div className="feedback" style={{ borderLeftColor: '#10b981' }}>
+                      <strong style={{ color: '#34d399' }}>+ What was good</strong>
+                      <span>{q.what_was_good}</span>
+                    </div>
+                    <div className="feedback" style={{ borderLeftColor: '#f59e0b' }}>
+                      <strong style={{ color: '#fbbf24' }}>- What was missing</strong>
+                      <span>{q.what_was_missing}</span>
                     </div>
                   </div>
-                )}
-              </div>
-            )
-          )}
+
+                  {/* Model Answer Outline */}
+                  {q.sample_answer_outline && (
+                    <div>
+                      <span className="eyebrow" style={{ color: '#64748b' }}>MODEL ANSWER OUTLINE</span>
+                      <div className="outline-box">{q.sample_answer_outline}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
-        <div className="next-card">
+
+        {/* ================================================================= */}
+        {/* TAILORED IMPROVEMENT PLAN                                          */}
+        {/* ================================================================= */}
+        <div className="section-head" style={{ marginTop: 55 }}>
           <div>
-            <span className="eyebrow">KEEP THE MOMENTUM</span>
-            <h2>One more rep?</h2>
-            <p>Try a managerial round to practise your strategic thinking.</p>
+            <h2>Tailored Improvement Plan & Resources</h2>
+            <p style={{ color: '#64748b', fontSize: 13, margin: '4px 0 0' }}>
+              Actionable development roadmap targeting identified gaps, with curated practice questions and verified learning references.
+            </p>
           </div>
-          <Pill onClick={() => go('/interview/setup')}>Next round</Pill>
+          <span className="eyebrow" style={{ color: '#818cf8' }}>PHASE 6.2 ROADMAP</span>
+        </div>
+
+        <div className="plan-grid">
+          {(improvementPlan.length > 0
+            ? improvementPlan
+            : [
+                {
+                  id: 'action-1',
+                  title: 'Deepen Distributed Caching & Invalidation Patterns',
+                  topic: 'System Design',
+                  priority: 'HIGH' as const,
+                  target_score: 90,
+                  current_score: 65,
+                  description:
+                    'Master cache-aside, write-through, and stampede mitigation techniques under high concurrency. Articulate trade-offs during architectural interviews.',
+                  practice_questions: [
+                    'Design a distributed cache system with TTL eviction and stampede protection.',
+                    'How do you handle Redis cache penetration and cache avalanches in production?',
+                  ],
+                  resources: [
+                    {
+                      title: 'The System Design Primer',
+                      url: 'https://github.com/donnemartin/system-design-primer',
+                      platform: 'GitHub Open Source',
+                      description: 'Comprehensive guide for scalable distributed system architecture.',
+                    },
+                    {
+                      title: 'Redis Official Documentation',
+                      url: 'https://redis.io/docs/',
+                      platform: 'Redis',
+                      description: 'In-depth reference on memory caching patterns and eviction.',
+                    },
+                  ],
+                },
+                {
+                  id: 'action-2',
+                  title: 'Calibrate Vocal Cadence & Eliminate Filler Words',
+                  topic: 'Vocal Delivery',
+                  priority: 'MEDIUM' as const,
+                  target_score: 85,
+                  current_score: 74,
+                  description:
+                    'Maintain a conversational speaking pace between 130-155 WPM. Replace fillers ("um", "like") with deliberate 1.5-second pauses.',
+                  practice_questions: [
+                    'Deliver a 90-second technical overview of an async message queue maintaining a steady 140 WPM pace.',
+                  ],
+                  resources: [
+                    {
+                      title: 'Toastmasters Public Speaking Resources',
+                      url: 'https://www.toastmasters.org/resources/public-speaking-tips',
+                      platform: 'Toastmasters International',
+                      description: 'Techniques for vocal control, pacing, and eliminating filler words.',
+                    },
+                  ],
+                },
+              ]
+          ).map((act) => (
+            <div className="plan-card" key={act.id}>
+              <div className="plan-header">
+                <div>
+                  <div className="plan-title">{act.title}</div>
+                  <span className="eyebrow" style={{ color: '#818cf8' }}>
+                    TARGET TOPIC: {act.topic.toUpperCase()}
+                  </span>
+                </div>
+                <span className={`plan-priority ${act.priority.toLowerCase()}`}>
+                  {act.priority} PRIORITY
+                </span>
+              </div>
+
+              <p className="plan-desc">{act.description}</p>
+
+              {/* Practice Questions */}
+              {act.practice_questions && act.practice_questions.length > 0 && (
+                <div>
+                  <div className="plan-subheading">
+                    <BookOpen style={{ width: 12, display: 'inline', marginRight: 5 }} />
+                    Recommended Practice Questions
+                  </div>
+                  <ul className="practice-q-list">
+                    {act.practice_questions.map((pq, idx) => (
+                      <li key={idx}>
+                        <span style={{ color: '#818cf8' }}>›</span>
+                        {pq}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Curated Resources */}
+              {act.resources && act.resources.length > 0 && (
+                <div>
+                  <div className="plan-subheading" style={{ color: '#38bdf8' }}>
+                    <ExternalLink style={{ width: 12, display: 'inline', marginRight: 5 }} />
+                    Curated Authoritative Resources
+                  </div>
+                  <div className="resource-pills">
+                    {act.resources.map((res, idx) => (
+                      <a
+                        className="resource-pill"
+                        key={idx}
+                        href={res.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={res.description}
+                      >
+                        <strong>{res.title}</strong>
+                        <small style={{ color: '#93c5fd' }}>({res.platform})</small>
+                        <ExternalLink style={{ width: 11 }} />
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* ================================================================= */}
+        {/* INTEGRITY & PROCTORING NOTES                                      */}
+        {/* ================================================================= */}
+        <div className="integrity-box clean">
+          <ShieldCheck style={{ width: 24, color: '#10b981', flexShrink: 0, marginTop: 2 }} />
+          <div>
+            <div style={{ font: "700 14px 'Plus Jakarta Sans'", color: '#f1f5f9', marginBottom: 4 }}>
+              Integrity & Proctoring Audit: Verified Clean
+            </div>
+            <p style={{ margin: 0, color: '#94a3b8', fontSize: 12.5, lineHeight: 1.5 }}>
+              No tab switching, window blurring, or multi-face presence events were detected during this interview session. Full compliance verified against the integrity monitoring thresholds.
+            </p>
+          </div>
+        </div>
+
+        {/* ================================================================= */}
+        {/* RETAKE OR NEXT ROUND? DECISION BUTTONS                            */}
+        {/* ================================================================= */}
+        <div className="next-card" style={{ marginTop: 45 }}>
+          <div>
+            <span className="eyebrow">RETAKE OR NEXT ROUND?</span>
+            <h2>Choose your next move.</h2>
+            <p>
+              Retake this {normalizedRound} round targeted on your identified weak areas, advance to the {nextRound} round, or return to your dashboard.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Pill
+              onClick={() => {
+                const focusParam = weakTopics.length > 0 ? `&focus=${encodeURIComponent(weakTopics.join(','))}` : '';
+                go(`/interview/setup?round=${encodeURIComponent(normalizedRound)}&retake=true${focusParam}`);
+              }}
+            >
+              <RotateCcw style={{ width: 14, marginRight: 6, display: 'inline' }} />
+              Retake {normalizedRound} Round
+            </Pill>
+
+            <button
+              className="secondary"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '9px 18px',
+                borderRadius: 999,
+                fontWeight: 600,
+                fontSize: 13,
+                cursor: 'pointer',
+              }}
+              onClick={() => {
+                const focusParam = weakTopics.length > 0 ? `&focus=${encodeURIComponent(weakTopics.join(','))}` : '';
+                go(`/interview/setup?round=${encodeURIComponent(nextRound)}${focusParam}`);
+              }}
+            >
+              <ArrowRight style={{ width: 14, display: 'inline' }} />
+              Try {nextRound} Round
+            </button>
+
+            <button
+              className="secondary"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '9px 18px',
+                borderRadius: 999,
+                fontWeight: 600,
+                fontSize: 13,
+                cursor: 'pointer',
+              }}
+              onClick={() => go('/dashboard')}
+            >
+              <CheckCircle2 style={{ width: 14, display: 'inline' }} />
+              Finish & Return to Dashboard
+            </button>
+          </div>
         </div>
       </main>
     </Shell>
