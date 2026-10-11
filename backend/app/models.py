@@ -118,6 +118,7 @@ class InterviewConfig(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
     user = relationship("User", back_populates="interview_configs")
+    questions = relationship("QuestionBankItem", back_populates="interview_config", cascade="all, delete-orphan", order_by="desc(QuestionBankItem.rank_score)")
 
 
 class UserMemory(Base):
@@ -147,5 +148,30 @@ class AskedQuestion(Base):
     score = Column(Float, nullable=True)
 
     user = relationship("User", back_populates="asked_questions")
+
+
+class QuestionBankItem(Base):
+    __tablename__ = "question_bank_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    interview_id = Column(Integer, ForeignKey("interview_configs.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_hash = Column(String(64), nullable=False, index=True)
+    text = Column(Text, nullable=False)
+    topic = Column(String(100), nullable=False, index=True)
+    subtopic = Column(String(100), nullable=True)
+    difficulty = Column(String(50), nullable=False)  # Easy, Medium, Hard, Adaptive
+    question_type = Column(String(50), nullable=False)  # conceptual, coding-explanation, scenario, behavioral, project-based
+    expected_keywords = Column(JSON, default=list, nullable=False)
+    ideal_answer_points = Column(JSON, default=list, nullable=False)
+    max_time_seconds = Column(Integer, default=120, nullable=False)
+    cv_reference = Column(String(255), nullable=True)
+    is_weak_area = Column(Boolean, default=False, nullable=False)
+    rank_score = Column(Float, default=0.0, nullable=False)
+    is_reserve_followup = Column(Boolean, default=False, nullable=False)
+    followup_templates = Column(JSON, default=list, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    interview_config = relationship("InterviewConfig", back_populates="questions")
+
 
 

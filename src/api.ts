@@ -421,6 +421,13 @@ export const api = {
   async seedInterviewHistory(): Promise<UserContext> {
     return request<UserContext>('/interview/seed-history', { method: 'POST' });
   },
+
+  async generateInterviewBlueprint(payload?: InterviewBlueprintRequest): Promise<InterviewBlueprint> {
+    return request<InterviewBlueprint>('/interview/blueprint', {
+      method: 'POST',
+      body: payload ? JSON.stringify(payload) : undefined,
+    });
+  },
 };
 
 export interface ConfirmedProfile {
@@ -478,5 +485,51 @@ export interface InterviewConfig {
   pressure_rules: Record<string, any>;
   created_at: string;
 }
+
+export interface BlueprintTopic {
+  name: string;
+  category: string;
+  weight: number;
+  allocated_questions: number;
+  is_weak_area: boolean;
+  description?: string | null;
+}
+
+export interface TimeBreakdown {
+  warm_up_seconds: number;
+  questions_total_seconds: number;
+  closing_seconds: number;
+  total_allocated_seconds: number;
+  total_duration_seconds: number;
+  time_per_question_seconds: number;
+}
+
+export interface InterviewBlueprint {
+  round_type: string;
+  difficulty: string;
+  duration_minutes: number;
+  mode: string;
+  total_question_count: number;
+  time_per_question_seconds: number;
+  follow_up_limit_per_topic: number;
+  difficulty_curve: string[];
+  topics: BlueprintTopic[];
+  warm_up_questions: string[];
+  closing_questions: string[];
+  time_breakdown: TimeBreakdown;
+  mixed_ratio?: Record<string, number> | null;
+}
+
+export interface InterviewBlueprintRequest {
+  config_id?: number;
+  round_type?: string;
+  difficulty?: string;
+  duration_minutes?: number;
+  language?: string;
+  mode?: string;
+  focus_topics?: string[];
+  mixed_ratio?: Record<string, number>;
+}
+
 
 

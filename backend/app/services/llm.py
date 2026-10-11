@@ -33,6 +33,28 @@ class LLMService:
         """Allows test suites to mock LLM responses directly."""
         self._mock_handler = handler
 
+    def is_active(self) -> bool:
+        """Returns True if a mock handler or external provider with API key is configured."""
+        if self._mock_handler is not None:
+            return True
+        if self.provider in ("openai", "azure", "groq", "gemini") and bool(self.api_key):
+            return True
+        return False
+
+    async def generate_structured_async(
+        self,
+        prompt: str,
+        response_schema: Type[T],
+        system_prompt: str = "You are an AI Interview Engine. Return only valid JSON adhering strictly to the schema.",
+        temperature: float = 0.0,
+    ) -> Optional[T]:
+        """Convenience wrapper for structured JSON generation."""
+        return await self.generate_structured_json(
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            schema_cls=response_schema,
+        )
+
     async def call_raw_llm(self, system_prompt: str, user_prompt: str) -> str:
         """Invokes the configured LLM provider and returns the raw string response."""
         prompt_size = len(system_prompt) + len(user_prompt)

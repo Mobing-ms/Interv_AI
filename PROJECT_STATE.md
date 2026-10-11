@@ -78,6 +78,8 @@ cd c:\Users\soory\Downloads\InterAI\backend
 .\venv\Scripts\python.exe test_cv_phase1_4.py
 .\venv\Scripts\python.exe test_profile_phase1_5.py
 .\venv\Scripts\python.exe test_interview_phase2_1.py
+.\venv\Scripts\python.exe test_interview_blueprint.py
+.\venv\Scripts\python.exe test_question_bank_phase2_3.py
 ```
 
 To seed simulated returning-candidate history:
@@ -112,6 +114,47 @@ To seed simulated returning-candidate history:
   - New Candidate Badge: Displays baseline evaluation indicator.
   - Saved to `POST /interview/config` before transitioning to precheck.
 
-### Upcoming Next in Phase 2
-- **Phase 2.2**: Interview Blueprint & LLM Seed Question Pool (blueprint generator, seed question generation from CV & round type, dedupe, tag, rank, Question Bank persistence).
+### Phase 2.2: Interview Blueprint Builder (100% Complete & Verified)
+- **Pure Function**: `build_interview_blueprint(profile, target_profile, config, user_context, mixed_ratio)`.
+  - Determines topics based on round type:
+    - `Technical`: CV skills (languages, frameworks, tools), projects deep-dive, target role architecture, and core CS fundamentals (DSA, DBMS, OS, Networks, System Design).
+    - `HR`: Self-introduction, strengths/weaknesses, teamwork, conflict resolution, motivation, situational judgment.
+    - `Managerial`: Leadership, decision-making under ambiguity, extreme ownership, prioritization, stakeholder management.
+    - `Mixed`: Configurable ratio blending Technical, HR, and Managerial categories.
+  - Boosts weights of weak areas identified in candidate memory (1.85x multiplier, ensuring heavy interview focus on growth areas).
+  - Strict duration math: fits question count to chosen duration (`warm_up + (total_questions * time_per_question) + closing == total_duration`).
+  - Mode differentiation: Normal mode = 120s timer; Pressure mode = 60s timer (scales up question pacing).
+  - Strict topic follow-up limit: `follow_up_limit_per_topic = 2`.
+  - Difficulty curve: custom trajectories for Easy, Medium, Hard, and Adaptive.
+- **Endpoint**: `POST /interview/blueprint` automatically assembles user's canonical profile, target role, configuration, and memory context, supporting request overrides.
+- **Test Suite**: `test_interview_blueprint.py` (9/9 tests passed).
+
+### Phase 2.3: Question Pool Generation & Question Bank (100% Complete & Verified)
+- **Model**: `QuestionBankItem` (`id`, `interview_id`, `question_hash`, `text`, `topic`, `subtopic`, `difficulty`, `question_type`, `expected_keywords`, `ideal_answer_points`, `max_time_seconds`, `cv_reference`, `is_weak_area`, `rank_score`, `is_reserve_followup`, `followup_templates`, `created_at`).
+  - Foreign key linked to `interview_configs.id` with cascade deletion.
+  - Alembic migration `bf5ad75e9047_create_question_bank_items_table.py` applied.
+- **Deduplication Engine (`question_dedupe.py`)**:
+  - Exact question fingerprinting via normalized SHA-256 (`compute_question_hash`).
+  - Near-duplicate detection using term-frequency & sub-word n-gram vectorization with cosine similarity threshold ($\ge 0.82$).
+  - Historical exclusion: drops questions matching the candidate's `AskedQuestion.question_hash` history so returning users never see repeated questions.
+- **Generation & Ranking Engine (`question_generator.py`)**:
+  - Generates 2-3x seed pool via LLM or context-aware generator grounded in CV projects, skills, education, and target role.
+  - Project-based and skill-based questions strictly reference real CV items.
+  - Tag validation and normalization (`conceptual`, `coding-explanation`, `scenario`, `behavioral`, `project-based`).
+  - Scoring formula: $\text{rank\_score} = (\text{topic\_weight} \times 0.40) + (\text{weak\_area\_boost} \times 0.35) + (\text{diff\_fit} \times 0.10) + (\text{cv\_ref\_boost} \times 0.15)$.
+  - Reserve follow-up questions: partitions pool into active questions (`total_question_count`) and reserve questions with follow-up templates attached per topic.
+- **Endpoints**:
+  - `POST /interview/{id}/questions/generate`: Generates, dedupes, ranks, and stores the question pool in the database (supports `force_regenerate=True`).
+  - `GET /interview/{id}/questions`: Retrieves active questions and reserve follow-ups with blueprint summary.
+- **Test Suite**: `test_question_bank_phase2_3.py` (7/7 tests passed).
+
+---
+
+## 5. Phase 2 Status & Upcoming Roadmap
+- **Phase 2.1**: Interview Setup & Returning-User Check (Complete & Verified)
+- **Phase 2.2**: Interview Blueprint Builder (Complete & Verified)
+- **Phase 2.3**: Question Pool Generation & Question Bank (Complete & Verified)
+- **Phase 2.4**: Next Phase (Interactive live interview turn-taking / audio / speech-to-text / dynamic follow-ups).
+
+
 

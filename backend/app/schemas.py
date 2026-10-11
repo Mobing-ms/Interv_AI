@@ -411,4 +411,93 @@ class UserContextOut(BaseModel):
     mode_presets: Dict[str, Any] = Field(default_factory=dict)
 
 
+# --- Phase 2.2 Interview Blueprint Schemas ---
+
+class BlueprintTopic(BaseModel):
+    name: str
+    category: str  # "Technical", "HR", "Managerial", "Project", "Core"
+    weight: float
+    allocated_questions: int
+    is_weak_area: bool = False
+    description: Optional[str] = None
+
+
+class TimeBreakdown(BaseModel):
+    warm_up_seconds: int
+    questions_total_seconds: int
+    closing_seconds: int
+    total_allocated_seconds: int
+    total_duration_seconds: int
+    time_per_question_seconds: int
+
+
+class InterviewBlueprint(BaseModel):
+    round_type: str
+    difficulty: str
+    duration_minutes: int
+    mode: str
+    total_question_count: int
+    time_per_question_seconds: int
+    follow_up_limit_per_topic: int = 2
+    difficulty_curve: List[str]
+    topics: List[BlueprintTopic]
+    warm_up_questions: List[str]
+    closing_questions: List[str]
+    time_breakdown: TimeBreakdown
+    mixed_ratio: Optional[Dict[str, float]] = None
+
+
+class InterviewBlueprintRequest(BaseModel):
+    config_id: Optional[int] = None
+    round_type: Optional[str] = None
+    difficulty: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    language: Optional[str] = None
+    mode: Optional[str] = None
+    focus_topics: Optional[List[str]] = None
+    mixed_ratio: Optional[Dict[str, float]] = None
+
+
+# --- Phase 2.3 Question Pool Generation & Bank Schemas ---
+
+class QuestionBankItemOut(BaseModel):
+    id: int
+    interview_id: int
+    question_hash: str
+    text: str
+    topic: str
+    subtopic: Optional[str] = None
+    difficulty: str
+    question_type: str
+    expected_keywords: List[str] = Field(default_factory=list)
+    ideal_answer_points: List[str] = Field(default_factory=list)
+    max_time_seconds: int
+    cv_reference: Optional[str] = None
+    is_weak_area: bool = False
+    rank_score: float = 0.0
+    is_reserve_followup: bool = False
+    followup_templates: Optional[List[str]] = Field(default_factory=list)
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class QuestionPoolOut(BaseModel):
+    interview_id: int
+    total_generated: int
+    deduped_count: int
+    questions: List[QuestionBankItemOut]
+    reserve_followups: List[QuestionBankItemOut]
+    blueprint_summary: Dict[str, Any]
+
+
+class QuestionGenerationRequest(BaseModel):
+    force_regenerate: Optional[bool] = False
+    similarity_threshold: Optional[float] = 0.82
+    multiplier: Optional[float] = 2.5
+
+
+
+
 

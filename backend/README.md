@@ -43,6 +43,19 @@ FastAPI backend for IntervAI, an AI mock-interview platform.
 - `POST /interview/seed-history`: Dev endpoint / script to seed fake interview history (scores, weak areas, asked questions) to test returning candidate behavior.
 - Seed script (`seed_user_history.py`): Run `python seed_user_history.py [email]` to simulate past sessions.
 
+### Phase 2.2: Interview Blueprint Builder
+- `POST /interview/blueprint`: Generates a deterministic, tailored interview blueprint.
+  - Takes candidate's parsed CV, target role, session config, and historical memory context.
+  - Computes weighted topic distribution (Technical: CV skills/projects/CS fundamentals; HR: self-intro, teamwork, conflict, motivation; Managerial: leadership, decision-making, ownership, prioritization; Mixed: configurable blend).
+  - Boosts weights of weak areas identified in candidate memory.
+  - Fits question count to duration (warm-up + question count * time per question + closing strictly equals total duration).
+  - Enforces `follow_up_limit_per_topic = 2`.
+  - Halves answer timer in Pressure mode (60s vs 120s), scaling up question pacing.
+### Phase 2.3: Question Pool Generation & Question Bank
+- `POST /interview/{id}/questions/generate`: Generates a seed pool of 2–3x required questions using LLM or context-aware generation grounded in CV skills/projects. Deduplicates near-duplicates via sentence embedding cosine similarity and eliminates any questions matching the user's `AskedQuestion` history. Ranks questions by topic weight, weak-area boost, and difficulty fit, attaching reserve follow-up templates per topic. Persists into `question_bank_items` table.
+- `GET /interview/{id}/questions`: Retrieves active questions and reserve follow-ups for the given interview session.
+- Models: `QuestionBankItem` (linked to `InterviewConfig` with foreign key and cascade deletion).
+
 ## How to Run
 
 1. Activate virtual environment:
@@ -70,6 +83,8 @@ python test_cv.py
 python test_cv_phase1_4.py
 python test_profile_phase1_5.py
 python test_interview_phase2_1.py
+python test_interview_blueprint.py
+python test_question_bank_phase2_3.py
 ```
 To seed fake interview history for testing returning users:
 ```bash
