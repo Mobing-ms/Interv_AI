@@ -20,6 +20,7 @@ backend/storage/cv_uploads/*
 !backend/storage/cv_uploads/.gitkeep
 backend/storage/sessions/*
 !backend/storage/sessions/.gitkeep
+backend/cache/
 
 # Environment secrets & local files
 .env
