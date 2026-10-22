@@ -442,8 +442,10 @@ class SessionOrchestrator:
                     f"Hello {candidate_name}! Welcome to your {target_role} interview with IntervAI. "
                     "I will be your interviewer today. I'm excited to learn more about your technical background and experience."
                 )
-                await self.emit_avatar_speak(greeting_text)
                 self.transition_to(SessionState.WARMUP)
+                await self.emit_avatar_speak(greeting_text)
+                # Brief pause so the candidate hears the greeting before warmup question kicks in
+                await asyncio.sleep(2.5)
                 await self.run_state_action()
 
             # -----------------------------------------------------------------

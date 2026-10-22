@@ -24,7 +24,7 @@ class SessionState(str, Enum):
 
 class SessionStateData(BaseModel):
     session_id: int
-    user_id: int
+    user_id: Optional[int] = None
     interview_id: Optional[int] = None
     state: SessionState = SessionState.GREETING
     previous_state: Optional[SessionState] = None

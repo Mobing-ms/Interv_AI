@@ -4210,6 +4210,17 @@ function Live({ go }: { go: (p: string) => void }) {
   const audioChunkCounter = useRef(0);
   const videoFrameCounter = useRef(0);
 
+  const [wsStatus, setWsStatus] = useState<'CONNECTING' | 'OPEN' | 'CLOSING' | 'CLOSED'>('CONNECTING');
+  const [debugEvents, setDebugEvents] = useState<Array<{ id: number; time: string; dir: 'TX' | 'RX'; type: string; summary: string }>>([]);
+  const [showDebugOverlay, setShowDebugOverlay] = useState(true);
+  const speechRecRef = useRef<any>(null);
+
+  const addDebugEvent = (dir: 'TX' | 'RX', type: string, payload?: any) => {
+    const timeStr = new Date().toLocaleTimeString();
+    const summary = payload ? JSON.stringify(payload).slice(0, 70) : '';
+    setDebugEvents((prev) => [{ id: Date.now() + Math.random(), time: timeStr, dir, type, summary }, ...prev.slice(0, 19)]);
+  };
+
   // Extract session ID from URL path (e.g. /interview/live/123 -> 123)
   const pathParts = window.location.pathname.split('/');
   const rawSessionId = pathParts[pathParts.length - 1];
@@ -4222,7 +4233,49 @@ function Live({ go }: { go: (p: string) => void }) {
       isRecordingRef.current = true;
       setIsRecording(true);
 
-      // 1. Acquire media stream (audio + video)
+      // 1. Web Speech Recognition for real-time speech transcription
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition && !speechRecRef.current) {
+        try {
+          const recognizer = new SpeechRecognition();
+          recognizer.continuous = true;
+          recognizer.interimResults = true;
+          recognizer.lang = 'en-US';
+          recognizer.onresult = (evt: any) => {
+            let transcript = '';
+            for (let i = evt.resultIndex; i < evt.results.length; ++i) {
+              transcript += evt.results[i][0].transcript;
+            }
+            if (transcript.trim()) {
+              setLiveTranscript(transcript);
+              setCandidateAnswer(transcript);
+              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({
+                  type: 'audio_chunk',
+                  text: transcript,
+                  is_speech: true,
+                  duration: 0.5,
+                  timestamp: Date.now(),
+                }));
+              }
+            }
+          };
+          recognizer.onerror = (recErr: any) => {
+            console.debug('Speech recognition notice:', recErr);
+          };
+          recognizer.onend = () => {
+            if (isRecordingRef.current) {
+              try { recognizer.start(); } catch (e) {}
+            }
+          };
+          recognizer.start();
+          speechRecRef.current = recognizer;
+        } catch (e) {
+          console.debug('SpeechRecognizer init:', e);
+        }
+      }
+
+      // 2. Acquire media stream (audio + video)
       let stream = mediaStreamRef.current;
       if (!stream || !stream.active) {
         try {
@@ -4250,7 +4303,7 @@ function Live({ go }: { go: (p: string) => void }) {
         videoPreviewRef.current.play().catch(() => {});
       }
 
-      // 2. Mic level analyser using AudioContext
+      // 3. Mic level analyser using AudioContext
       if (stream) {
         try {
           const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -4280,7 +4333,7 @@ function Live({ go }: { go: (p: string) => void }) {
         }
       }
 
-      // 3. Audio streaming in chunks over WebSocket
+      // 4. Audio streaming in chunks over WebSocket
       if (stream && typeof MediaRecorder !== 'undefined') {
         try {
           const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
@@ -4298,14 +4351,15 @@ function Live({ go }: { go: (p: string) => void }) {
                   for (let i = 0; i < bytes.length; i++) binaryStr += String.fromCharCode(bytes[i]);
                   const base64Data = btoa(binaryStr);
                   audioChunkCounter.current += 1;
-                  wsRef.current.send(JSON.stringify({
+                  const chunkPayload = {
                     type: 'audio_chunk',
                     chunk_id: audioChunkCounter.current,
                     data: base64Data,
                     duration: 0.5,
                     stream_transcript: true,
                     timestamp: Date.now(),
-                  }));
+                  };
+                  wsRef.current.send(JSON.stringify(chunkPayload));
                 }
               });
             }
@@ -4316,7 +4370,7 @@ function Live({ go }: { go: (p: string) => void }) {
         }
       }
 
-      // 4. Video frames at 1 per second over WebSocket
+      // 5. Video frames at 1 per second over WebSocket
       const canvas = document.createElement('canvas');
       canvas.width = 320;
       canvas.height = 240;
@@ -4330,12 +4384,13 @@ function Live({ go }: { go: (p: string) => void }) {
           ctx.drawImage(vid, 0, 0, 320, 240);
           const frameData = canvas.toDataURL('image/jpeg', 0.55);
           videoFrameCounter.current += 1;
-          wsRef.current.send(JSON.stringify({
+          const framePayload = {
             type: 'video_frame',
             frame_id: videoFrameCounter.current,
             frame: frameData,
             timestamp: Date.now(),
-          }));
+          };
+          wsRef.current.send(JSON.stringify(framePayload));
         }
       }, 1000); // 1 per second
     } catch (err) {
@@ -4348,6 +4403,10 @@ function Live({ go }: { go: (p: string) => void }) {
     setIsRecording(false);
     setMicLevel(0);
 
+    if (speechRecRef.current) {
+      try { speechRecRef.current.stop(); } catch (e) {}
+      speechRecRef.current = null;
+    }
     if (videoIntervalRef.current) {
       clearInterval(videoIntervalRef.current);
       videoIntervalRef.current = null;
@@ -4386,6 +4445,7 @@ function Live({ go }: { go: (p: string) => void }) {
       // When audio playback ends, frontend sends ready signal;
       // orchestrator then starts the answer timer and recording.
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        addDebugEvent('TX', 'client_ready');
         wsRef.current.send(JSON.stringify({
           type: 'client_ready',
           timestamp: Date.now(),
@@ -4431,7 +4491,14 @@ function Live({ go }: { go: (p: string) => void }) {
 
   // Connect to live WebSocket stream
   useEffect(() => {
-    const token = localStorage.getItem('intervai_access_token') || localStorage.getItem('access_token') || '';
+    // Robust token resolution across session_token, access_token, and guest_token
+    const token =
+      localStorage.getItem('intervai_session_token') ||
+      localStorage.getItem('intervai_access_token') ||
+      localStorage.getItem('intervai_guest_token') ||
+      localStorage.getItem('access_token') ||
+      '';
+
     let wsHost = 'localhost:8000';
     let wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     if (API_BASE_URL.startsWith('http')) {
@@ -4445,7 +4512,7 @@ function Live({ go }: { go: (p: string) => void }) {
     } else {
       wsHost = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
     }
-    const wsUrl = `${wsProto}//${wsHost}/session/${sessionId}/live?token=${token}`;
+    const wsUrl = `${wsProto}//${wsHost}/session/${sessionId}/live?token=${encodeURIComponent(token)}`;
 
     let isCleaningUp = false;
     let reconnectTimeout: any = null;
@@ -4455,24 +4522,30 @@ function Live({ go }: { go: (p: string) => void }) {
     const connectWebSocket = () => {
       if (isCleaningUp) return;
 
+      setWsStatus('CONNECTING');
+      addDebugEvent('TX', 'CONNECTING', { wsUrl: wsUrl.split('?')[0] });
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
         setWsConnected(true);
+        setWsStatus('OPEN');
+        addDebugEvent('RX', 'OPEN');
         if (hasConnectedOnce) {
           toast.success('Reconnected to live interview stream! Resuming question.');
         }
         hasConnectedOnce = true;
         reconnectAttempts = 0;
+        addDebugEvent('TX', 'heartbeat');
         ws.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
       };
 
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          addDebugEvent('RX', msg.type, msg);
           if (msg.type === 'connected') {
-            // Connected
+            // Handshake confirmed
           } else if (msg.type === 'avatar_speak') {
             setSubtitles(msg.text);
             playSpeech(msg.text, msg.audio_url, msg.language);
@@ -4524,16 +4597,25 @@ function Live({ go }: { go: (p: string) => void }) {
 
       ws.onerror = (e) => {
         console.warn('WebSocket stream error:', e);
+        addDebugEvent('RX', 'ERROR', { readyState: ws.readyState });
       };
 
-      ws.onclose = () => {
+      ws.onclose = (closeEvt) => {
         setWsConnected(false);
+        setWsStatus('CLOSED');
+        addDebugEvent('RX', 'CLOSED', { code: closeEvt.code, reason: closeEvt.reason });
         if (!isCleaningUp) {
           reconnectAttempts += 1;
-          const delay = Math.min(10000, 2000 * Math.pow(1.5, reconnectAttempts - 1));
-          toast.warning(`Live stream disconnected. Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})...`, {
-            duration: 3500,
-          });
+          const delay = Math.min(10000, 1500 * Math.pow(1.5, reconnectAttempts - 1));
+          if (reconnectAttempts <= 3) {
+            toast.info(`Live stream reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}/3)...`, {
+              duration: 2500,
+            });
+          } else {
+            toast.warning('Live session disconnected. Retrying connection...', {
+              duration: 3500,
+            });
+          }
           reconnectTimeout = setTimeout(() => {
             if (!isCleaningUp) {
               connectWebSocket();
@@ -4545,12 +4627,13 @@ function Live({ go }: { go: (p: string) => void }) {
 
     connectWebSocket();
 
-    // Heartbeat loop every 15s
+    // Client sends heartbeat every 10 seconds (Server timeout is 30s)
     const hbInterval = setInterval(() => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        addDebugEvent('TX', 'heartbeat');
         wsRef.current.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
       }
-    }, 15000);
+    }, 10000);
 
     return () => {
       isCleaningUp = true;
@@ -4825,6 +4908,71 @@ function Live({ go }: { go: (p: string) => void }) {
               142 <small>WPM</small>
             </strong>
           </div>
+        </div>
+
+        {/* Live Debug Diagnostics Overlay */}
+        <div style={{
+          position: 'fixed',
+          bottom: '16px',
+          right: '16px',
+          zIndex: 9999,
+          maxWidth: '380px',
+          backgroundColor: 'rgba(15, 23, 42, 0.92)',
+          color: '#f8fafc',
+          borderRadius: '10px',
+          padding: '12px',
+          fontSize: '11px',
+          fontFamily: 'monospace',
+          border: '1px solid rgba(255, 255, 255, 0.15)',
+          boxShadow: '0 8px 30px rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(8px)',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <span style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{
+                display: 'inline-block',
+                width: '8px',
+                height: '8px',
+                borderRadius: '50%',
+                backgroundColor: wsStatus === 'OPEN' ? '#10b981' : wsStatus === 'CONNECTING' ? '#f59e0b' : '#ef4444',
+              }} />
+              WEBSOCKET DIAGNOSTICS
+            </span>
+            <button
+              onClick={() => setShowDebugOverlay(!showDebugOverlay)}
+              style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '2px 4px' }}
+            >
+              {showDebugOverlay ? 'Hide' : 'Show'}
+            </button>
+          </div>
+
+          {showDebugOverlay && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', marginBottom: '8px', color: '#cbd5e1' }}>
+                <div>Socket: <strong style={{ color: wsStatus === 'OPEN' ? '#34d399' : '#f87171' }}>{wsStatus}</strong></div>
+                <div>Session ID: <strong>#{sessionId}</strong></div>
+                <div>Avatar: <strong>{avatarState}</strong></div>
+                <div>Timer: <strong>{timerActive ? `${timerSeconds}s` : 'Paused'}</strong></div>
+                <div style={{ gridColumn: 'span 2' }}>
+                  Question: <strong>{currentQuestion ? `#${currentQuestion.id} (${currentQuestion.topic || 'Warmup'})` : 'None'}</strong>
+                </div>
+              </div>
+
+              <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '6px' }}>
+                <div style={{ color: '#94a3b8', marginBottom: '4px', fontSize: '10px' }}>LAST 10 EVENTS (SENT / RECEIVED):</div>
+                <div style={{ maxHeight: '140px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  {debugEvents.slice(0, 10).map((evt) => (
+                    <div key={evt.id} style={{ display: 'flex', gap: '6px', fontSize: '10px' }}>
+                      <span style={{ color: '#64748b' }}>{evt.time}</span>
+                      <span style={{ color: evt.dir === 'TX' ? '#38bdf8' : '#a78bfa', fontWeight: 'bold' }}>[{evt.dir}]</span>
+                      <span style={{ color: '#e2e8f0' }}>{evt.type}</span>
+                    </div>
+                  ))}
+                  {debugEvents.length === 0 && <div style={{ color: '#64748b' }}>No events yet</div>}
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </main>
     </Shell>

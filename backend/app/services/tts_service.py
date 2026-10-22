@@ -81,9 +81,7 @@ class TTSService:
     """
 
     def __init__(self, provider: Optional[BaseTTSProvider] = None, cache_dir: Optional[str] = None):
-        self.provider = provider or (
-            MockTTSProvider() if getattr(settings, "DEV_MODE", True) else CloudTTSProvider()
-        )
+        self.provider = provider or CloudTTSProvider()
         self.cache_dir = cache_dir or os.path.join(os.path.dirname(__file__), "..", "..", "cache", "tts")
         os.makedirs(self.cache_dir, exist_ok=True)
         self._memory_cache: Dict[str, Tuple[bytes, str]] = {}

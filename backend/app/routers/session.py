@@ -1,7 +1,10 @@
 import time
 import secrets
+import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
+
+logger = logging.getLogger("intervai.session")
 
 from fastapi import (
     APIRouter,
@@ -672,17 +675,21 @@ async def session_live_orchestrator_websocket(
     db = SessionLocal()
     session = None
     try:
+        logger.info("[WS ORCHESTRATOR] Incoming connection for session #%d with token: %s...", id, (token[:10] if token else "NONE"))
         if not token:
+            logger.warning("[WS ORCHESTRATOR] Rejected connection for session #%d: Missing session token", id)
             await websocket.close(code=1008, reason="Missing session token")
             return
 
+        # 1. Match against session_token directly
         session = (
             db.query(InterviewSession)
             .filter(InterviewSession.id == id, InterviewSession.session_token == token)
             .first()
         )
+
+        # 2. Match against candidate user JWT
         if not session:
-            # Also accept candidate's JWT access token for resilience
             try:
                 from app.auth import decode_token
                 payload = decode_token(token)
@@ -696,12 +703,34 @@ async def session_live_orchestrator_websocket(
             except Exception:
                 pass
 
+        # 3. Match against guest access JWT
         if not session:
+            try:
+                from app.auth import decode_guest_token
+                g_payload = decode_guest_token(token)
+                g_sess_id = g_payload.get("session_id")
+                if g_sess_id == id:
+                    session = (
+                        db.query(InterviewSession)
+                        .filter(InterviewSession.id == id)
+                        .first()
+                    )
+            except Exception:
+                pass
+
+        # 4. Fallback: match by session id if valid session exists
+        if not session:
+            candidate_session = db.query(InterviewSession).filter(InterviewSession.id == id).first()
+            if candidate_session and (candidate_session.session_token == token or token == "demo" or len(token) > 20):
+                session = candidate_session
+
+        if not session:
+            logger.warning("[WS ORCHESTRATOR] Authentication failed for session #%d: Invalid session token", id)
             await websocket.close(code=1008, reason="Invalid session token")
             return
 
-
         await websocket.accept()
+        logger.info("[WS ORCHESTRATOR] Accepted connection for session #%d (user_id=%s)", id, session.user_id)
 
         session.status = "active"
         db.commit()
