@@ -1,3 +1,4 @@
+import logging
 """
 Report Router (Phase 6.2 & Guest Practice Mode).
 Provides endpoints for report access, improvement plan retrieval, and server-side PDF export.
@@ -139,8 +140,9 @@ def export_report_pdf(
                 "Content-Type": "application/pdf",
             },
         )
-    except Exception as e:
+    except Exception:
+        logging.getLogger("intervai.report").exception("PDF generation failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate PDF report: {str(e)}",
+            detail="Failed to generate PDF report.",
         )

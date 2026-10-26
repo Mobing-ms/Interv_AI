@@ -213,9 +213,10 @@ def health_check():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         health["checks"]["database"] = {"status": "ok", "dialect": engine.dialect.name}
-    except Exception as db_err:
+    except Exception:
+        logging.getLogger("intervai.health").exception("Database health check failed")
         health["status"] = "degraded"
-        health["checks"]["database"] = {"status": "error", "message": str(db_err)}
+        health["checks"]["database"] = {"status": "error"}
 
     # 2. Cache / State Store Check
     try:
@@ -227,8 +228,9 @@ def health_check():
             "status": "ok",
             "mode": "redis" if is_redis else "in_memory_fallback",
         }
-    except Exception as redis_err:
-        health["checks"]["cache_state"] = {"status": "warning", "message": str(redis_err)}
+    except Exception:
+        logging.getLogger("intervai.health").exception("State store health check failed")
+        health["checks"]["cache_state"] = {"status": "warning"}
 
     # 3. Storage Backend Check
     try:
@@ -237,8 +239,9 @@ def health_check():
             "status": "ok",
             "backend": "s3" if isinstance(default_storage_provider, S3StorageProvider) else "local",
         }
-    except Exception as storage_err:
-        health["checks"]["storage"] = {"status": "warning", "message": str(storage_err)}
+    except Exception:
+        logging.getLogger("intervai.health").exception("Storage health check failed")
+        health["checks"]["storage"] = {"status": "warning"}
 
     # 4. Speech-to-Text Provider Check
     health["checks"]["stt_provider"] = {

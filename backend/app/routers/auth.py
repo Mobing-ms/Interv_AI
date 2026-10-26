@@ -1,3 +1,4 @@
+import logging
 import random
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -31,6 +32,7 @@ from app.auth import (
 from app.services.google_auth_service import verify_google_id_token
 
 limiter = Limiter(key_func=get_remote_address)
+logger = logging.getLogger("intervai.auth")
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
@@ -52,29 +54,21 @@ def _try_link_guest_session(
     2. X-Guest-Token header
     3. guest_token cookie
     """
-    guest_sess_id = body_guest_id
-    if not guest_sess_id:
-        guest_cookie = request.cookies.get("guest_token")
-        guest_hdr = request.headers.get("X-Guest-Token")
-        token_to_check = guest_cookie or guest_hdr
-        if token_to_check:
-            try:
-                from app.auth import decode_guest_token
-                payload = decode_guest_token(token_to_check)
-                guest_sess_id = payload.get("session_id")
-            except Exception:
-                pass
+    # A guest session is only linked when the caller proves they hold its guest token.
+    from app.auth import guest_session_ids_proven_by_request
+    proven = guest_session_ids_proven_by_request(request)
+    if body_guest_id and body_guest_id not in proven:
+        logger.warning("Refusing to link guest session #%s: no matching guest token presented", body_guest_id)
+        return
+    guest_sess_id = body_guest_id or (next(iter(proven)) if len(proven) == 1 else None)
 
     if guest_sess_id:
         try:
             from app.services.guest_service import link_guest_session_to_user
             link_guest_session_to_user(int(guest_sess_id), user_id, db)
         except Exception:
-            pass
-        try:
-            response.delete_cookie("guest_token")
-        except Exception:
-            pass
+            logger.exception("Failed to link guest session #%s to user #%s", guest_sess_id, user_id)
+        response.delete_cookie("guest_token")
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -201,14 +195,16 @@ def google_auth(
     try:
         id_info = verify_google_id_token(token_str.strip(), client_id=client_id)
     except ValueError as e:
+        logging.getLogger("intervai.auth").info("Google ID token rejected: %s", e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e),
+            detail="Google ID token verification failed.",
         )
-    except Exception as e:
+    except Exception:
+        logging.getLogger("intervai.auth").exception("Google ID token verification error")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Google ID token verification failed: {str(e)}",
+            detail="Google ID token verification failed.",
         )
 
     email = id_info.get("email", "").strip().lower()

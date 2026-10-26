@@ -29,7 +29,7 @@ from app.models import (
     InterviewSession,
     SessionCalibration,
 )
-from app.auth import get_current_user, get_current_user_or_guest, AuthContext
+from app.auth import get_current_user, get_current_user_or_guest, AuthContext, authenticate_ws_session, require_maintenance_token
 from app.schemas import (
     ConsentCreate,
     ConsentOut,
@@ -198,9 +198,10 @@ def _build_ws_url(request: Request, session_id: int, token: str) -> str:
     Constructs the WebSocket URL based on request scheme and host.
     Ensures wss:// is used when running over HTTPS or behind TLS reverse proxies.
     """
-    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    trust = settings.TRUST_PROXY_HEADERS
+    proto = (trust and request.headers.get("x-forwarded-proto")) or request.url.scheme
     scheme = "wss" if proto == "https" else "ws"
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host", "127.0.0.1:8000")
+    host = (trust and request.headers.get("x-forwarded-host")) or request.headers.get("host", "127.0.0.1:8000")
     return f"{scheme}://{host}/session/{session_id}/stream?token={token}"
 
 
@@ -469,7 +470,7 @@ def _resolve_session(id: int, auth_ctx: AuthContext, db: Session) -> InterviewSe
     - Guests can access only their own session matching guest token (session.is_guest and session.id == guest_session_id)
     """
     if auth_ctx.is_guest:
-        if auth_ctx.guest_session_id is not None and auth_ctx.guest_session_id != id:
+        if auth_ctx.guest_session_id != id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Guest token does not permit access to this interview session.",
@@ -675,58 +676,10 @@ async def session_live_orchestrator_websocket(
     db = SessionLocal()
     session = None
     try:
-        logger.info("[WS ORCHESTRATOR] Incoming connection for session #%d with token: %s...", id, (token[:10] if token else "NONE"))
-        if not token:
-            logger.warning("[WS ORCHESTRATOR] Rejected connection for session #%d: Missing session token", id)
-            await websocket.close(code=1008, reason="Missing session token")
-            return
-
-        # 1. Match against session_token directly
-        session = (
-            db.query(InterviewSession)
-            .filter(InterviewSession.id == id, InterviewSession.session_token == token)
-            .first()
-        )
-
-        # 2. Match against candidate user JWT
+        session = authenticate_ws_session(db, id, token)
         if not session:
-            try:
-                from app.auth import decode_token
-                payload = decode_token(token)
-                sub = payload.get("sub")
-                if sub:
-                    session = (
-                        db.query(InterviewSession)
-                        .filter(InterviewSession.id == id, InterviewSession.user_id == int(sub))
-                        .first()
-                    )
-            except Exception:
-                pass
-
-        # 3. Match against guest access JWT
-        if not session:
-            try:
-                from app.auth import decode_guest_token
-                g_payload = decode_guest_token(token)
-                g_sess_id = g_payload.get("session_id")
-                if g_sess_id == id:
-                    session = (
-                        db.query(InterviewSession)
-                        .filter(InterviewSession.id == id)
-                        .first()
-                    )
-            except Exception:
-                pass
-
-        # 4. Fallback: match by session id if valid session exists
-        if not session:
-            candidate_session = db.query(InterviewSession).filter(InterviewSession.id == id).first()
-            if candidate_session and (candidate_session.session_token == token or token == "demo" or len(token) > 20):
-                session = candidate_session
-
-        if not session:
-            logger.warning("[WS ORCHESTRATOR] Authentication failed for session #%d: Invalid session token", id)
-            await websocket.close(code=1008, reason="Invalid session token")
+            logger.warning("[WS] Rejected connection for session #%d: invalid or missing credentials", id)
+            await websocket.close(code=1008, reason="Unauthorized")
             return
 
         await websocket.accept()
@@ -742,12 +695,13 @@ async def session_live_orchestrator_websocket(
         await orchestrator.start(websocket)
 
     except WebSocketDisconnect:
-        pass
-    except Exception as e:
+        logger.info("[WS] Client disconnected from session #%d", id)
+    except Exception:
+        logger.exception("[WS] Unhandled error in live session #%d", id)
         try:
-            await websocket.send_json({"type": "error", "detail": str(e)})
+            await websocket.send_json({"type": "error", "code": "internal_error", "detail": "Internal server error"})
         except Exception:
-            pass
+            logger.debug("[WS] Could not deliver error frame for session #%d", id)
     finally:
         if db:
             db.close()
@@ -773,13 +727,9 @@ async def session_stream_websocket(
             await websocket.close(code=1008, reason="Missing session token")
             return
 
-        session = (
-            db.query(InterviewSession)
-            .filter(InterviewSession.id == id, InterviewSession.session_token == token)
-            .first()
-        )
+        session = authenticate_ws_session(db, id, token)
         if not session:
-            await websocket.close(code=1008, reason="Invalid session token")
+            await websocket.close(code=1008, reason="Unauthorized")
             return
 
         await websocket.accept()
@@ -1250,10 +1200,11 @@ def get_session_pdf(
                 "Content-Type": "application/pdf",
             },
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("PDF generation failed for session #%d", id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate PDF report: {str(e)}",
+            detail="Failed to generate PDF report.",
         )
 
 
@@ -1354,6 +1305,7 @@ def get_signed_recording_file(
 
 @router.post("/maintenance/cleanup-retention")
 def trigger_retention_cleanup(
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
@@ -1361,6 +1313,7 @@ def trigger_retention_cleanup(
     - Purges guest recordings older than 24 hours.
     - Purges user recording media blobs older than 30 days.
     """
+    require_maintenance_token(request)
     from app.services.retention_service import cleanup_all_expired_recordings
     result = cleanup_all_expired_recordings(db)
     return {"status": "ok", "cleanup_summary": result}

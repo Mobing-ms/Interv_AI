@@ -36,11 +36,12 @@ from app.models import (
     UserConsent,
     CVDocument,
 )
-from app.auth import get_current_user, create_guest_token
+from app.auth import get_current_user, create_guest_token, require_maintenance_token
 from app.services.guest_service import (
     check_guest_ip_limit,
     log_guest_ip,
     verify_turnstile_captcha,
+    client_ip_from_request,
     generate_guest_questions,
     cleanup_expired_guest_sessions,
     link_guest_session_to_user,
@@ -95,12 +96,7 @@ def start_guest_session(
     3. Fixed 3 questions for a focused 8-10 minute interview.
     4. Issues a signed 24-hour guest JWT in an httpOnly cookie.
     """
-    client_ip = (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        or request.client.host
-        if request.client
-        else "127.0.0.1"
-    )
+    client_ip = client_ip_from_request(request)
 
     # 1. Abuse Protection: Daily IP Rate Limit
     is_allowed, hit_count = check_guest_ip_limit(client_ip, db)
@@ -315,11 +311,13 @@ async def upload_guest_cv(
 
 
 @router.post("/cleanup")
-def cleanup_old_guest_data(db: Session = Depends(get_db)):
+def cleanup_old_guest_data(request: Request, db: Session = Depends(get_db)):
     """
+    Requires X-Maintenance-Token.
     Deletes all guest sessions and storage files older than 24 hours.
     Can be run on schedule or invoked by background maintenance jobs.
     """
+    require_maintenance_token(request)
     cleaned = cleanup_expired_guest_sessions(db, max_age_hours=settings.GUEST_RETENTION_HOURS)
     return {
         "status": "success",
@@ -330,13 +328,22 @@ def cleanup_old_guest_data(db: Session = Depends(get_db)):
 
 @router.post("/link")
 def link_guest_session(
+    request: Request,
     body: GuestLinkRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Links an anonymous guest session and its report to the currently logged in user account.
+    The caller must prove ownership of the guest session with its guest token
+    (body.guest_token, X-Guest-Token header, or the guest_token cookie).
     """
+    from app.auth import guest_session_ids_proven_by_request
+    if body.guest_session_id not in guest_session_ids_proven_by_request(request, body.guest_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A valid guest token for this session is required to link it.",
+        )
     success = link_guest_session_to_user(
         guest_session_id=body.guest_session_id,
         user_id=current_user.id,
