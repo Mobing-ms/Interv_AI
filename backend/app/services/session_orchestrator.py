@@ -1,6 +1,7 @@
 import time
 import json
 import asyncio
+import random
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Callable
@@ -32,6 +33,7 @@ from app.services.evaluator_service import LLMAnswerEvaluator
 from app.services.router_service import (
     RouterService,
     generate_follow_up_async,
+    generate_probing_follow_up,
     handle_closing_inquiry,
 )
 from app.services.question_pool_store import ensure_question_pool
@@ -48,9 +50,17 @@ from app.services.answer_capture_service import (
     default_storage_manager,
 )
 from app.services.integrity_monitor import IntegrityMonitor
+from app.services.stt_service import HostedSTTService, default_hosted_stt
 from app.models import SessionCalibration
 
 logger = logging.getLogger("intervai.session_orchestrator")
+
+MAX_ANSWER_AUDIO_BYTES = 24 * 1024 * 1024  # Groq upload limit is 25 MB
+FOLLOW_UP_TIMEOUT_SECONDS = 8.0
+GENERIC_PROJECT_QUESTION_ID = 950
+ACK_LINES = ["Mm-hm.", "Okay.", "Right.", "Mm, okay."]
+NO_WORRIES_LINES = ["No worries.", "That's okay.", "No problem."]
+MOVE_ON_LINES = ["Let's try a different one.", "Let's move on.", "Let's switch gears."]
 
 
 class SessionOrchestrator:
@@ -73,6 +83,7 @@ class SessionOrchestrator:
         voice_tracker: Optional[VoiceActivityTracker] = None,
         nudge_detector: Optional[SilenceNudgeDetector] = None,
         stt_service: Optional[StreamingSTTService] = None,
+        hosted_stt: Optional[HostedSTTService] = None,
         storage_manager: Optional[AnswerStorageManager] = None,
         signal_processor: Optional[ParallelSignalProcessor] = None,
     ):
@@ -88,9 +99,14 @@ class SessionOrchestrator:
             if heartbeat_timeout_seconds is not None
             else settings.HEARTBEAT_TIMEOUT_SECONDS
         )
-        self.voice_tracker = voice_tracker or VoiceActivityTracker(silence_timeout_seconds=2.5, min_speech_duration_seconds=1.0)
+        self.voice_tracker = voice_tracker or VoiceActivityTracker(silence_timeout_seconds=6.0, min_speech_duration_seconds=3.0)
         self.nudge_detector = nudge_detector or SilenceNudgeDetector(silence_threshold_seconds=8.0)
         self.stt_service = stt_service or default_stt_service
+        self.hosted_stt = hosted_stt or default_hosted_stt
+        self._lead_in = ""  # spoken before the next question (e.g. after "I don't know")
+        self._ack_task: Optional[asyncio.Task] = None
+        # Raw audio of the answer in progress (one browser MediaRecorder stream), transcribed when it ends.
+        self._answer_audio = bytearray()
         self.storage_manager = storage_manager or default_storage_manager
         self.signal_processor = signal_processor or default_signal_processor
         self.integrity_monitor = IntegrityMonitor(
@@ -231,6 +247,15 @@ class SessionOrchestrator:
             "timestamp": time.time(),
         })
 
+    async def emit_ack(self, text: str) -> None:
+        """Server -> Client: ack (text, audio_url). A short spoken acknowledgement; it does not start any timer."""
+        lang = self.state.language if self.state else "English"
+        try:
+            synth = await asyncio.to_thread(default_tts_service.synthesize_speech, text, language=lang, voice_style="neutral")
+        except Exception:
+            synth = {}
+        await self.emit("ack", {"text": text, "audio_url": synth.get("audio_url", ""), "language": synth.get("language", "en"), "timestamp": time.time()})
+
     async def emit_question(self, q: Dict[str, Any]) -> None:
         """Server -> Client: question (id, text, time_limit, topic, is_follow_up)."""
         await self.emit("question", {
@@ -354,6 +379,19 @@ class SessionOrchestrator:
                     "expected_keywords": ["trade-off", "performance", "delivery", "outcome"],
                 },
             ]
+
+        # 3b. No CV: still ask about a project once, like a real interviewer; follow-ups build on the answer
+        if not any(q.get("is_cv_based") for q in pool):
+            pool.append({
+                "id": GENERIC_PROJECT_QUESTION_ID,
+                "text": "Tell me about a project you've worked on, at work, uni or on your own. What did you build, and what was the hardest technical decision you made?",
+                "topic": "Projects",
+                "subtopic": "Your project",
+                "difficulty": "Medium",
+                "is_cv_based": True,
+                "time_limit": pool[0].get("time_limit", settings.ORCHESTRATOR_QUESTION_TIME_SECONDS) if pool else settings.ORCHESTRATOR_QUESTION_TIME_SECONDS,
+                "expected_keywords": ["built", "decision", "trade-off", "result"],
+            })
 
         # 4. Every topic in the pool gets an equal share; the selector balances topics and
         # alternates CV and topic questions. The generator's active/reserve split ranks CV
@@ -536,6 +574,7 @@ class SessionOrchestrator:
                 self.state.current_answer_text = ""
                 self.state.current_question_nudged = False
                 self.state.current_question_speech_detected = False
+                self.state.current_answer_start = None
                 self.voice_tracker.reset()
                 self.stt_service.reset_question(warmup_q["id"])
                 self._persist()
@@ -563,13 +602,15 @@ class SessionOrchestrator:
                 self.state.current_answer_text = ""
                 self.state.current_question_nudged = False
                 self.state.current_question_speech_detected = False
+                self.state.current_answer_start = None
                 self.voice_tracker.reset()
                 if "id" in q:
                     self.stt_service.reset_question(q["id"])
                 self._persist()
 
                 await self.emit_question(q)
-                await self.emit_avatar_speak(q["text"])
+                lead_in, self._lead_in = self._lead_in, ""
+                await self.emit_avatar_speak(f"{lead_in} {q['text']}".strip())
                 self.transition_to(SessionState.LISTENING)
 
             # -----------------------------------------------------------------
@@ -587,6 +628,11 @@ class SessionOrchestrator:
                 curr_q = self.state.current_question or {}
                 ans_text = self.state.current_answer_text or ""
                 eval_res = await self._evaluate_answer(curr_q, ans_text)
+                logger.info(
+                    "Session #%d Q%s graded %s (rel %s, source %s, %d words): %s",
+                    self.session_id, curr_q.get("id"), eval_res.get("classification"), eval_res.get("relevance"),
+                    eval_res.get("evaluation_source"), len(ans_text.split()), (eval_res.get("justification") or "")[:160],
+                )
 
                 # Append to persistent session context with validated evaluation metrics
                 context_item = {
@@ -612,6 +658,8 @@ class SessionOrchestrator:
                     "word_count": eval_res.get("word_count", len(ans_text.split())),
                     "transcript_words": self.state.question_transcripts.get(curr_q.get("id", 1), {}).get("words", []),
                     "follow_up_needed": eval_res.get("follow_up_needed", False),
+                    "non_answer": bool(eval_res.get("non_answer")),
+                    "reaction": eval_res.get("reaction", ""),
                     "asked_at": time.time(),
                 }
                 self.state.session_context.append(context_item)
@@ -638,6 +686,17 @@ class SessionOrchestrator:
                 )
                 route = self.router.decide_route(self.state, last_eval)
                 action = route.get("action", "next_question")
+                if last_eval.get("classification") == "OFF_TOPIC" and action == "follow_up":
+                    # Off-topic again after the one redirect: probing it further just stalls the interview
+                    action = "next_question"
+                    self._lead_in = random.choice(MOVE_ON_LINES)
+                elif last_eval.get("non_answer") and action in ("follow_up", "redirect"):
+                    # "I don't know": a person would move on, not push for a concrete example
+                    action = "next_question"
+                    self._lead_in = random.choice(MOVE_ON_LINES)
+                elif last_eval.get("reaction") and action != "redirect":
+                    # Respond to what they actually said before asking the next thing
+                    self._lead_in = last_eval["reaction"]
 
                 # Handle difficulty adjustment
                 diff_adj = route.get("difficulty_adjustment")
@@ -655,27 +714,35 @@ class SessionOrchestrator:
                     self.state.question_repeat_count[q_id_str] = self.state.question_repeat_count.get(q_id_str, 0) + 1
                     self._persist()
 
-                    redirect_msg = route.get("redirect_message") or f"Let's refocus on the original question: {curr_q.get('text', '')}"
+                    redirect_msg = route.get("redirect_message") or "Let me ask that again."
                     await self.emit("redirect", {
                         "text": redirect_msg,
                         "message": redirect_msg,
                         "question": curr_q,
                         "reason": route.get("reason", "off_topic"),
                     })
-                    await self.emit_avatar_speak(redirect_msg)
+                    # Said as the lead-in of the repeated question: one utterance, the question asked once
+                    self._lead_in = redirect_msg
                     self.transition_to(SessionState.ASKING)
                     await self.run_state_action()
                     return
 
                 # 2. Follow-up probing for WEAK_VAGUE (strictly max 2 per topic)
                 if action == "follow_up":
-                    fu_q = await generate_follow_up_async(
-                        self.state.current_question or {},
-                        last_eval,
-                        route.get("topic") or self.state.topic or "General",
-                        reason=route.get("follow_up_reason", "probe_gap"),
-                        session_id=self.session_id,
-                    )
+                    fu_topic = route.get("topic") or self.state.topic or "General"
+                    try:
+                        fu_q = await asyncio.wait_for(
+                            generate_follow_up_async(
+                                self.state.current_question or {},
+                                last_eval,
+                                fu_topic,
+                                reason=route.get("follow_up_reason", "probe_gap"),
+                                session_id=self.session_id,
+                            ),
+                            timeout=FOLLOW_UP_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        fu_q = generate_probing_follow_up(self.state.current_question or {}, last_eval, fu_topic)
 
                     if fu_q:
                         self.state.current_question = fu_q
@@ -815,7 +882,29 @@ class SessionOrchestrator:
         self.transition_to(SessionState.ENDED)
         await self.run_state_action()
 
-    async def _finish_answer(self, reason: str = "manual", answer_text: Optional[str] = None) -> None:
+    async def _transcribe_answer_audio(self) -> Optional[Dict[str, Any]]:
+        """Transcribes the buffered answer audio with the hosted STT provider; None if unavailable or failed."""
+        audio = bytes(self._answer_audio)
+        self._answer_audio = bytearray()
+        if not audio or not self.hosted_stt.is_hosted:
+            return None
+        prompt = (self.state.current_question or {}).get("text", "")[:200] or None
+        try:
+            res = await asyncio.wait_for(
+                self.hosted_stt.transcribe_audio_bytes(audio, filename="answer.webm", language="en", prompt=prompt),
+                timeout=20.0,
+            )
+        except Exception as e:
+            logger.warning("Session #%d: hosted STT failed (%s); using browser transcript", self.session_id, e)
+            return None
+        # The provider falls back to a canned mock sentence on errors; never treat that as the candidate's answer
+        if res.get("provider") == "mock":
+            logger.warning("Session #%d: hosted STT returned mock output; using browser transcript", self.session_id)
+            return None
+        logger.info("Session #%d: Whisper transcribed %d bytes -> %d words", self.session_id, len(audio), len(res.get("text", "").split()))
+        return res
+
+    async def _finish_answer(self, reason: str = "manual", answer_text: Optional[str] = None, typed: bool = False) -> None:
         """
         Finalizes candidate's answer for the current question:
         - Stores final transcript with word-level timestamps.
@@ -832,12 +921,27 @@ class SessionOrchestrator:
             if answer_text and answer_text.strip()
             else (self.state.current_answer_text or "")
         )
+
+        # Server-side Whisper on the recorded answer; the browser transcript is the fallback.
+        # A typed (or edited) answer is exactly what the candidate meant, so it is never replaced.
+        whisper = None if typed and final_text else await self._transcribe_answer_audio()
+        self._answer_audio = bytearray()
+        # Whisper invents text ("Thank you.") on silence, so it only counts when speech was actually heard
+        heard = bool(final_text) or self.state.current_question_speech_detected
+        if whisper and heard and any(ch.isalnum() for ch in whisper.get("text", "")):
+            final_text = whisper["text"].strip()
+        else:
+            whisper = None
         self.state.current_answer_text = final_text
 
-        # Ensure transcript with word timings is saved
+        # Replace (never append to) the streamed transcript with the final one
         current_trans = self.stt_service.get_transcript(q_id)
-        if not current_trans.get("text") or current_trans.get("text") != final_text:
-            current_trans = self.stt_service.append_transcript_text(q_id, final_text)
+        if current_trans.get("text") != final_text:
+            self.stt_service.reset_question(q_id)
+            current_trans = self.stt_service.append_transcript_text(q_id, final_text) if final_text else self.stt_service.get_transcript(q_id)
+        if whisper and whisper.get("words") and whisper.get("text") == final_text:
+            current_trans["words"] = whisper["words"]
+            current_trans["source"] = whisper.get("provider")
 
         await asyncio.to_thread(self.storage_manager.save_transcript, self.session_id, q_id, current_trans)
         self.state.question_transcripts[q_id] = current_trans
@@ -853,6 +957,12 @@ class SessionOrchestrator:
                 "word_count": len(current_trans.get("words", [])),
                 "timestamp": now,
             })
+
+        # Acknowledge right away (in parallel with evaluation) so the candidate isn't left in silence
+        if (self.state.current_question or {}).get("topic") != "Closing":
+            from app.services.evaluator_service import is_non_answer
+            line = random.choice(NO_WORRIES_LINES if (not final_text or is_non_answer(final_text)) else ACK_LINES)
+            self._ack_task = asyncio.create_task(self.emit_ack(line))
 
         # Advance to EVALUATING
         self.transition_to(SessionState.EVALUATING)
@@ -909,6 +1019,12 @@ class SessionOrchestrator:
                 "server_timestamp": now,
             })
 
+        # Candidate is typing: counts as answering, so no silence nudge and no silence auto-end
+        elif msg_type == "answer_activity":
+            if self.state.state == SessionState.LISTENING:
+                self.state.current_question_speech_detected = True
+                self.voice_tracker.note_activity(now)
+
         # 2. Answer started
         elif msg_type == "answer_started":
             self.state.current_answer_start = now
@@ -937,17 +1053,25 @@ class SessionOrchestrator:
             elif "bytes" in data and isinstance(data["bytes"], bytes):
                 raw_audio = data["bytes"]
 
+            # Browser clients send WebM/Opus plus the mic level they measured for that slice
+            encoded = data.get("format") == "webm"
+            level_db = data.get("level_db")
             if raw_audio:
+                if self.state.state == SessionState.LISTENING and len(self._answer_audio) < MAX_ANSWER_AUDIO_BYTES:
+                    self._answer_audio.extend(raw_audio)
                 await asyncio.to_thread(self.storage_manager.save_audio_chunk, self.session_id, q_id, chunk_id, raw_audio)
+            if raw_audio or text_fragment:
                 # Parallel Audio Signal Worker (asynchronous with backpressure)
                 self.signal_processor.push_audio_chunk(
                     session_id=self.session_id,
                     question_id=q_id,
                     timestamp=now,
                     audio_bytes=raw_audio,
-                    duration=chunk_duration,
+                    duration=chunk_duration if raw_audio else 0.0,
                     stt_text=text_fragment,
                     calibration=self.calibration,
+                    level_db=float(level_db) if isinstance(level_db, (int, float)) else None,
+                    encoded=encoded,
                 )
 
             # Voice Activity Detection (VAD)
@@ -1056,6 +1180,9 @@ class SessionOrchestrator:
             self.state.current_question_nudged = False
             self.state.current_question_speech_detected = False
             self.voice_tracker.reset()
+            self._answer_audio = bytearray()
+            if self.state.current_question:
+                self.stt_service.reset_question(self.state.current_question.get("id", 1))
             self._persist()
             curr_limit = (
                 self.state.current_question.get("time_limit", 120)
@@ -1071,7 +1198,7 @@ class SessionOrchestrator:
         # 6. Answer ended (manual backup button or timer expiration)
         elif msg_type == "answer_ended":
             raw_text = data.get("text", "").strip()
-            await self._finish_answer(reason="manual", answer_text=raw_text)
+            await self._finish_answer(reason="manual", answer_text=raw_text, typed=data.get("input_mode") == "typed")
             return
 
         # 7. Client keepalive

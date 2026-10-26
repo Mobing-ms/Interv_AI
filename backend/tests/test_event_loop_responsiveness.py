@@ -79,7 +79,7 @@ async def test_llm_evaluator_is_async(monkeypatch):
 
     orch = _orchestrator(evaluator_module=LLMAnswerEvaluator())
     res, ticks = await _count_ticks_during(
-        orch._evaluate_answer({"id": 1, "text": "q", "expected_keywords": []}, "a real answer")
+        orch._evaluate_answer({"id": 1, "text": "q", "expected_keywords": []}, "I would put a token bucket per key in Redis")
     )
     assert res["evaluation_source"] == "llm"
     assert res["overall_score"] == 7.0

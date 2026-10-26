@@ -113,6 +113,9 @@ def get_round_type_weights(round_type: Optional[str]) -> Dict[str, float]:
 # 2. SCORE FUSION (PURE FUNCTION)
 # =============================================================================
 
+CLOSING_QUESTION_ID = 999
+
+
 def _score_or_none(module: Optional[Dict[str, Any]]) -> Optional[float]:
     if not module:
         return None
@@ -161,6 +164,9 @@ def fuse_session_scores(
     composite_list = []
 
     for q in raw_scoring_report.get("per_question_breakdown", []):
+        # The closing "any questions for us?" turn is not part of the assessment
+        if q.get("question_id") == CLOSING_QUESTION_ID or q.get("topic") == "Closing":
+            continue
         c_score = _score_or_none(q.get("content"))
         s_score = _score_or_none(q.get("speech_confidence"))
         f_score = _score_or_none(q.get("face_posture"))
@@ -182,8 +188,16 @@ def fuse_session_scores(
     avg_content = _mean(content_list)
     avg_speech = _mean(speech_list)
     avg_face = _mean(face_list)
-    overall_fused = _weighted([(avg_content, w_content), (avg_speech, w_speech), (avg_face, w_face)])
-    overall_fused = max(0.0, min(100.0, round(overall_fused, 1))) if overall_fused is not None else None
+    # Without any evaluated answer content, delivery signals alone must not produce a grade;
+    # and a session where nothing was actually answered is not graded at all
+    answered_any = any(
+        q.get("answered", True) for q in raw_scoring_report.get("per_question_breakdown", [])
+        if q.get("question_id") != CLOSING_QUESTION_ID and q.get("topic") != "Closing"
+    )
+    overall_fused = None
+    if avg_content is not None and answered_any:
+        overall_fused = _weighted([(avg_content, w_content), (avg_speech, w_speech), (avg_face, w_face)])
+        overall_fused = max(0.0, min(100.0, round(overall_fused, 1)))
 
     if overall_fused is None:
         classification = "NOT_SCORED"

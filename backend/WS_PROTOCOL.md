@@ -57,7 +57,7 @@ Timestamps are unix seconds (floats). Clients may send milliseconds in
 | *(binary frame)* | raw audio bytes | server replies `binary_chunk_ack` |
 | `video_frame` | `frame` or `data` (base64 JPEG) | about 1/s |
 | `integrity_event` | `event_type`, `question_id?`, `timestamp?`, `severity?`, `details?` | |
-| `answer_ended` | `text?` | manual stop or timer expiry. In CLOSING it is treated as a candidate question |
+| `answer_ended` | `text?`, `input_mode?` (`voice` \| `typed`) | manual stop or timer expiry. With a hosted STT provider the server transcribes the answer's audio and uses that text, unless `input_mode` is `typed`. In CLOSING it is treated as a candidate question |
 | `client_query` / `candidate_question` | `text` | during CLOSING/ENDED |
 | pre-check only: `media_chunk`, `calibration_event` | | acknowledged with `chunk_ack` / `calibration_ack` |
 
@@ -80,6 +80,7 @@ the interview has started (they get `ack` with `ignored: true`).
 | `transcript_update` | `question_id`, `text`, `words`, `is_partial` |
 | `video_frame_ack` | `frame_id`, `received_at` |
 | `answer_complete` | `question_id`, `finish_reason` (`vad_silence`), `text`, `word_count` |
+| `ack` | `text`, `audio_url`, `language`. A short spoken acknowledgement ("Okay.", "No worries.") sent the moment an answer ends, while it is evaluated. Play it; it starts no timer and needs no `client_ready` |
 | `nudge` | `text`, `reason` |
 | `redirect` | `text`, `message` (same as `text`), `question`, `reason` |
 | `integrity_event_ack` | `event_id`, `event_type`, `total_events`, `is_flagged` |

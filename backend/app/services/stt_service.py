@@ -32,6 +32,11 @@ class HostedSTTService:
         self.api_key = api_key or settings.STT_API_KEY or getattr(settings, "LLM_API_KEY", "")
         self.model = settings.STT_MODEL or "whisper-large-v3-turbo"
 
+    @property
+    def is_hosted(self) -> bool:
+        """True when a real hosted provider is configured (not the mock)."""
+        return self.provider in ("groq", "openai", "deepgram") and bool(self.api_key)
+
     async def transcribe_audio_bytes(
         self,
         audio_bytes: bytes,
@@ -87,7 +92,8 @@ class HostedSTTService:
         if prompt:
             data["prompt"] = prompt
 
-        files = {"file": (filename, audio_bytes, "audio/wav")}
+        mime = "audio/webm" if filename.endswith(".webm") else "audio/wav"
+        files = {"file": (filename, audio_bytes, mime)}
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:

@@ -26,10 +26,11 @@ MAX_FOLLOWUPS_PER_TOPIC = 2
 # a partial answer is probed half the time and a strong one is pushed deeper about a third of the time.
 OK_FOLLOW_UP_RATE = 0.5
 SHORT_ANSWER_WORDS = 20
+# {subject} is the question's subtopic or topic, so the probe stays tied to what was asked.
 SHORT_ANSWER_PROBES = [
-    "Let's take it one step at a time. What is the very first thing you would look at or do, and why?",
-    "That's fine. If you had to start somewhere, which part of the problem would you tackle first?",
-    "Let's make it concrete. Can you think of a situation, even a small one, where you dealt with something similar?",
+    "No problem, let's simplify it. Thinking about {subject}, what is the very first thing you would look at, and why?",
+    "That's fine. If you had to start somewhere with {subject}, which part would you tackle first?",
+    "Let's make it concrete. Have you come across {subject} anywhere, even in a small project or a course? Walk me through what you did.",
 ]
 STRONG_FOLLOW_UP_RATE = 0.35
 
@@ -143,7 +144,7 @@ def generate_probing_follow_up(
     """
     gap = evaluation.get("follow_up_gap") or "Explain the internal mechanics and edge cases."
     parent_q_text = question.get("text", "")
-    subtopic = question.get("subtopic", topic)
+    subtopic = question.get("subtopic") or topic
     q_id = int(time.time() * 1000) % 1000000
 
     # Deterministic fallback, used when the LLM is unavailable: neutral and tied to the gap.
@@ -162,7 +163,7 @@ def generate_probing_follow_up(
         "id": q_id,
         "text": text,
         "topic": topic,
-        "subtopic": f"{subtopic} Probing",
+        "subtopic": subtopic,
         "difficulty": question.get("difficulty", "Medium"),
         "time_limit": max(45, int(question.get("time_limit", 90) * 0.75)),
         "is_follow_up": True,
@@ -193,7 +194,10 @@ async def generate_follow_up_async(
     if len(answer.split()) < SHORT_ANSWER_WORDS:
         # Nothing substantial to build on; an LLM here tends to invent things the candidate
         # "mentioned". Ask for a first concrete step instead.
-        fallback["text"] = SHORT_ANSWER_PROBES[len(answer) % len(SHORT_ANSWER_PROBES)]
+        subject = question.get("subtopic") or topic or "this"
+        if subject in ("Warmup", "General", "Introduction"):
+            subject = "this"
+        fallback["text"] = SHORT_ANSWER_PROBES[len(answer) % len(SHORT_ANSWER_PROBES)].format(subject=subject)
         return fallback
     if not llm_service.is_active():
         return fallback
@@ -314,9 +318,8 @@ def decide_route(
                 "topic": topic,
                 "difficulty_adjustment": "maintain",
                 "repeat_question": True,
-                "redirect_message": (
-                    f"Let's refocus on the question I asked: {curr_q.get('text', '')}"
-                ),
+                # Spoken just before the question is asked again, so it must not contain the question itself
+                "redirect_message": "I don't think that quite answers it. Let me ask again.",
                 "follow_up_gap": last_eval.get("follow_up_gap"),
                 "round_done": False,
             }

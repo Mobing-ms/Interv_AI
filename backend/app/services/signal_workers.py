@@ -13,6 +13,7 @@ import math
 import json
 import base64
 import asyncio
+import functools
 import logging
 import numpy as np
 from datetime import datetime, timezone
@@ -429,10 +430,16 @@ class AudioSignalWorker:
         duration: float,
         stt_text: str = "",
         calibration: Optional[Dict[str, Any]] = None,
+        level_db: Optional[float] = None,
+        encoded: bool = False,
     ) -> Dict[str, float]:
         """
         Extracts speech pace, filler rate, pitch dynamics, volume RMS, pauses, and clarity.
         Compares with calibration baseline if available.
+
+        Browser audio arrives compressed (WebM/Opus, `encoded=True`), which cannot be read as PCM:
+        volume and pauses then come from the client-measured `level_db`, and pitch is not measured.
+        A text-only chunk (no audio, no level) only updates the transcript-based metrics.
         """
         st = self._get_session_state(session_id)
         baseline = calibration or {}
@@ -445,8 +452,14 @@ class AudioSignalWorker:
         base_pitch_range = voice_baseline.get("pitch_range_hz", [100.0, 220.0])
         base_pitch_mean = sum(base_pitch_range) / 2.0
 
-        # 1. Volume (RMS in dB & amplitude)
-        if audio_bytes and len(audio_bytes) >= 2:
+        has_level = level_db is not None or (bool(audio_bytes) and not encoded)
+        if not has_level:
+            return self._text_metrics(st, stt_text)
+
+        # 1. Volume (RMS in dB & amplitude), on the int16 amplitude scale either way
+        if level_db is not None:
+            rms = float(10 ** (float(level_db) / 20.0) * 32768.0)
+        elif audio_bytes and len(audio_bytes) >= 2:
             try:
                 samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
                 rms = float(np.sqrt(np.mean(samples ** 2))) if len(samples) > 0 else 0.0
@@ -479,7 +492,7 @@ class AudioSignalWorker:
 
         # 3. Pitch estimation via autocorrelation
         pitch_hz = None
-        if not is_silence and audio_bytes and len(audio_bytes) >= 640:
+        if not is_silence and not encoded and audio_bytes and len(audio_bytes) >= 640:
             try:
                 samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
                 # Autocorrelation in human voice range: 80Hz - 350Hz (lag: 45 to 200 samples)
@@ -500,6 +513,26 @@ class AudioSignalWorker:
         pitch_mean = round(float(np.mean(st["pitches"][-20:])), 1) if st["pitches"] else None
         pitch_variance = round(float(np.var(st["pitches"][-20:])), 2) if len(st["pitches"]) > 2 else None
 
+        text_metrics = self._text_metrics(st, stt_text)
+
+        # 6. Clarity proxy (Voiced energy vs silence ratio)
+        clarity = round(max(0.4, min(1.0, 1.0 - (st["silent_duration"] / max(1.0, st["voiced_duration"] + 1.0)))), 2)
+
+        out = {
+            "volume_rms": round(rms, 1),
+            "volume_variability": vol_variability,
+            "pitch_hz": pitch_mean,
+            "pitch_variance": pitch_variance,
+            "pause_count": float(st["pause_count"]),
+            "avg_pause_length": avg_pause_len,
+            "clarity_proxy": clarity,
+            **text_metrics,
+        }
+        return {k: v for k, v in out.items() if v is not None}
+
+    @staticmethod
+    def _text_metrics(st: Dict[str, Any], stt_text: str) -> Dict[str, float]:
+        """Filler rate and pace from transcript words; unknown (absent) until words arrive."""
         # 4. Filler Word Analysis
         if stt_text:
             text_lower = stt_text.lower()
@@ -515,20 +548,10 @@ class AudioSignalWorker:
         voiced_mins = max(0.01, st["voiced_duration"] / 60.0)
         pace_wpm = round(st["total_words"] / voiced_mins, 1) if st["total_words"] > 0 and st["voiced_duration"] > 0 else None
 
-        # 6. Clarity proxy (Voiced energy vs silence ratio)
-        clarity = round(max(0.4, min(1.0, 1.0 - (st["silent_duration"] / max(1.0, st["voiced_duration"] + 1.0)))), 2)
-
         out = {
-            "volume_rms": round(rms, 1),
-            "volume_variability": vol_variability,
-            "pitch_hz": pitch_mean,
-            "pitch_variance": pitch_variance,
             "speech_pace_wpm": pace_wpm,
             "filler_count": float(st["filler_count"]) if st["total_words"] else None,
             "filler_rate": filler_rate,
-            "pause_count": float(st["pause_count"]),
-            "avg_pause_length": avg_pause_len,
-            "clarity_proxy": clarity,
         }
         return {k: v for k, v in out.items() if v is not None}
 
@@ -634,10 +657,12 @@ class ParallelSignalProcessor:
         duration: float,
         stt_text: str = "",
         calibration: Optional[Dict[str, Any]] = None,
+        level_db: Optional[float] = None,
+        encoded: bool = False,
     ) -> bool:
         """Pushes an audio chunk into worker queue with backpressure."""
         self.start_workers()
-        item = (session_id, question_id, timestamp, audio_bytes, duration, stt_text, calibration)
+        item = (session_id, question_id, timestamp, audio_bytes, duration, stt_text, calibration, level_db, encoded)
         if self._audio_queue.full():
             try:
                 self._audio_queue.get_nowait()
@@ -695,17 +720,15 @@ class ParallelSignalProcessor:
     async def _audio_worker_loop(self) -> None:
         while self._workers_running:
             try:
-                sess_id, q_id, ts, audio_bytes, duration, text, calib = await self._audio_queue.get()
+                sess_id, q_id, ts, audio_bytes, duration, text, calib, level_db, encoded = await self._audio_queue.get()
                 loop = asyncio.get_running_loop()
                 metrics = await loop.run_in_executor(
                     None,
-                    self.audio_worker.process_chunk,
-                    sess_id,
-                    audio_bytes,
-                    ts,
-                    duration,
-                    text,
-                    calib,
+                    functools.partial(
+                        self.audio_worker.process_chunk,
+                        sess_id, audio_bytes, ts, duration, text, calib,
+                        level_db=level_db, encoded=encoded,
+                    ),
                 )
 
                 for metric_name, val in metrics.items():

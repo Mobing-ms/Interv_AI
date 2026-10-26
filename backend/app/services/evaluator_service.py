@@ -6,6 +6,7 @@ scores candidate responses using the tunable evaluation rubric, and outputs vali
 
 import re
 import json
+import asyncio
 import time
 import logging
 from typing import Dict, Any, List, Optional
@@ -112,6 +113,48 @@ def is_behavioral_question(question: Dict[str, Any]) -> bool:
         "failure",
     ]
     return any(trigger in text for trigger in behavioral_triggers)
+
+
+LIVE_EVAL_TIMEOUT_SECONDS = 12.0
+
+_NON_ANSWER = re.compile(
+    r"^\W*(i\s*(do\s*n[o']?t|dont|dunno)\s*know|idk|no\s*idea|not\s*sure|i'?m\s*not\s*sure|pass|skip|"
+    r"i\s*have\s*no\s*(idea|clue)|no\s*clue|i\s*can'?t\s*(answer|remember)|next( question)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_reaction(text: Any) -> str:
+    """The spoken reaction, or "" when it is missing, too long, or a question (the next line asks the question)."""
+    t = " ".join(str(text or "").split())
+    if not t or len(t.split()) > 25 or "?" in t:
+        return ""
+    return t
+
+
+def is_non_answer(answer: str) -> bool:
+    """'I don't know', 'pass', 'no idea', or a few stray words: nothing to evaluate or probe."""
+    words = re.findall(r"[\w']+", answer or "")
+    if len(words) < 4:
+        return True
+    return len(words) <= 12 and bool(_NON_ANSWER.search(answer.strip()))
+
+
+def non_answer_evaluation(answer: str) -> Dict[str, Any]:
+    """Instant result for a non-answer: scored zero, and the interviewer moves on instead of probing."""
+    return {
+        "relevance": 0.0, "correctness": 0.0, "depth": 0.0, "overall_score": 0.0,
+        "keyword_coverage": {"matched": [], "missing": [], "coverage_ratio": 0.0},
+        "star_completeness": {},
+        "justification": "The candidate did not attempt this question.",
+        "classification": "WEAK_VAGUE",
+        "follow_up_gap": "",
+        "word_count": len(answer.split()),
+        "follow_up_needed": False,
+        "non_answer": True,
+        "evaluated_at": time.time(),
+        "evaluation_source": "non_answer",
+    }
 
 
 def evaluate_star_completeness(transcript: str, question: Dict[str, Any]) -> Dict[str, Any]:
@@ -424,6 +467,7 @@ class LLMAnswerEvaluator(EvaluatorModuleProtocol):
             "follow_up_gap": str(parsed.get("follow_up_gap", "elaborate further")),
             "word_count": len(answer.split()),
             "follow_up_needed": classification == "WEAK_VAGUE",
+            "reaction": _clean_reaction(parsed.get("reaction")),
             "evaluated_at": time.time(),
             "evaluation_source": "llm",
         }
@@ -446,20 +490,27 @@ class LLMAnswerEvaluator(EvaluatorModuleProtocol):
             return self._deterministic(question, answer, session_context, "deterministic mode")
         if not answer.strip():
             return self._deterministic(question, answer, session_context, "no answer captured")
+        if is_non_answer(answer):
+            return non_answer_evaluation(answer)
         if not llm_service.is_active():
             return self._deterministic(question, answer, session_context, "no LLM provider configured")
 
         code_kw_res = compute_keyword_coverage(answer, question.get("expected_keywords", []), question.get("ideal_answer_points", []))
         code_star_res = evaluate_star_completeness(answer, question)
         try:
-            raw = await llm_service.call_raw_llm(
-                EVALUATION_SYSTEM_PROMPT,
-                self._build_user_prompt(question, answer, code_kw_res),
-                session_id=session_id,
+            # Live turn: the candidate is waiting, so one quick retry at most and a hard time budget
+            raw = await asyncio.wait_for(
+                llm_service.call_raw_llm(
+                    EVALUATION_SYSTEM_PROMPT,
+                    self._build_user_prompt(question, answer, code_kw_res),
+                    session_id=session_id,
+                    retries=1,
+                ),
+                timeout=LIVE_EVAL_TIMEOUT_SECONDS,
             )
             parsed = json.loads(raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip())
             return self._merge_llm_result(parsed, answer, code_kw_res, code_star_res)
-        except (LLMError, httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
+        except (LLMError, httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError, KeyError, asyncio.TimeoutError) as e:
             logger.warning("[Evaluator][session_id=%s] LLM evaluation failed (%s); using deterministic evaluator", session_id or "none", e)
             return self._deterministic(question, answer, session_context, "LLM evaluation failed")
 

@@ -74,6 +74,14 @@ if settings.ENV == "production" and not root_logger.handlers:
     handler.setFormatter(StructuredJsonFormatter())
     root_logger.addHandler(handler)
     root_logger.setLevel(logging.INFO)
+elif not root_logger.handlers:
+    # Development: readable lines for the app's own loggers (interview flow, grading, STT)
+    dev_handler = logging.StreamHandler()
+    dev_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S"))
+    app_logger = logging.getLogger("intervai")
+    app_logger.addHandler(dev_handler)
+    app_logger.setLevel(logging.INFO)
+    app_logger.propagate = False
 
 
 # =============================================================================

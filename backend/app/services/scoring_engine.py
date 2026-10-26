@@ -671,9 +671,23 @@ def compute_content_score(
     max_sub_scores: Dict[str, float] = {}
 
     # Extract evaluator metrics (each scored 0.0 - 10.0 in evaluator_service)
-    raw_acc = float(evaluator_scores.get("correctness") or evaluator_scores.get("relevance") or 7.0)
-    raw_depth = float(evaluator_scores.get("depth", 7.0))
-    raw_relevance = float(evaluator_scores.get("relevance", 7.0))
+    # A 0 is a real score, so take the first value that exists rather than the first truthy one
+    def _first(*keys: str) -> Optional[float]:
+        for k in keys:
+            if evaluator_scores.get(k) is not None:
+                return float(evaluator_scores[k])
+        return None
+
+    # Only an overall score (0-100 or 0-10) known: it stands in for the missing sub-scores
+    overall = evaluator_scores.get("overall_score")
+    overall10 = None if overall is None else (float(overall) / 10.0 if float(overall) > 10 else float(overall))
+    raw_acc = _first("correctness", "relevance", "depth")
+    raw_acc = overall10 if raw_acc is None else raw_acc
+    raw_depth = _first("depth", "correctness")
+    raw_depth = raw_acc if raw_depth is None else raw_depth
+    raw_relevance = _first("relevance", "correctness")
+    raw_relevance = raw_acc if raw_relevance is None else raw_relevance
+    raw_acc, raw_depth, raw_relevance = (v or 0.0 for v in (raw_acc, raw_depth, raw_relevance))
     classification = str(evaluator_scores.get("classification", "OK")).upper()
     justification = str(evaluator_scores.get("justification", ""))
 
@@ -939,6 +953,16 @@ def compute_content_score(
 
     total_score = sum(sub_scores.values())
     total_score = max(0.0, min(100.0, round(total_score, 1)))
+    # Keywords and examples can't rescue an answer that doesn't address the question
+    if classification == "OFF_TOPIC" or raw_relevance <= 0:
+        cap = round(raw_acc * 10.0, 1)
+        if total_score > cap:
+            deductions.append({
+                "factor": "relevance", "earned_points": cap, "max_points": total_score,
+                "deduction": round(cap - total_score, 1), "metric_value": classification,
+                "reason": "The answer did not address the question, so other credit was not counted.",
+            })
+            total_score = cap
 
     return {
         "score": total_score,
@@ -964,6 +988,16 @@ def compute_content_score(
 # =============================================================================
 # PER-QUESTION COMPOSITE SCORER (PURE FUNCTION)
 # =============================================================================
+
+MIN_ANSWER_WORDS = 3
+
+
+def _not_measured(note: str) -> Dict[str, Any]:
+    return {
+        "score": None, "measured": False, "sub_scores": {}, "max_sub_scores": {},
+        "explanations": [], "deductions": [], "raw_metrics": {}, "note": note,
+    }
+
 
 def compute_question_score(
     question_aligned_data: Dict[str, Any],
@@ -995,14 +1029,20 @@ def compute_question_score(
     eval_scores = question_aligned_data.get("evaluator_scores", {})
     timings = question_aligned_data.get("word_timings", [])
 
+    answered = len(re.findall(r"\w+", transcript or "")) >= MIN_ANSWER_WORDS
+
     # 1. Face & Posture Module
     face_res = compute_face_and_posture_score(face_sigs, baseline=baseline, config=cfg.face_posture)
 
-    # 2. Speech Confidence Module
-    speech_res = compute_speech_confidence_score(speech_sigs, transcript=transcript, word_timings=timings, config=cfg.speech_confidence)
-
-    # 3. Content Rubric Module
-    content_res = compute_content_score(eval_scores, question_metadata=question_aligned_data, transcript=transcript, config=cfg.content_rubric)
+    if answered:
+        # 2. Speech Confidence Module
+        speech_res = compute_speech_confidence_score(speech_sigs, transcript=transcript, word_timings=timings, config=cfg.speech_confidence)
+        # 3. Content Rubric Module
+        content_res = compute_content_score(eval_scores, question_metadata=question_aligned_data, transcript=transcript, config=cfg.content_rubric)
+    else:
+        # No answer: nothing was said to judge for delivery, and the content earns nothing
+        speech_res = _not_measured("No answer was given, so delivery was not measured.")
+        content_res = {**_not_measured("No answer was given."), "score": 0.0, "measured": True}
 
     # Composite weighted average
     w_content = cfg.session_weights.content_weight
@@ -1040,6 +1080,7 @@ def compute_question_score(
         "question_text": question_aligned_data.get("question_text", ""),
         "topic": topic,
         "composite_score": composite,
+        "answered": answered,
         "face_posture": face_res,
         "speech_confidence": speech_res,
         "content": content_res,

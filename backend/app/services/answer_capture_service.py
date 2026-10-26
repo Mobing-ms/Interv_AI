@@ -114,6 +114,12 @@ class VoiceActivityTracker:
         self.total_chunks_processed = 0
         self.is_answer_completed = False
 
+    def note_activity(self, now: Optional[float] = None) -> None:
+        """Non-audio activity (typing) restarts the silence clock without counting as speech time."""
+        now = now or time.time()
+        if self.speech_started:
+            self.last_speech_time = now
+
     def feed_audio(
         self,
         pcm_bytes: bytes,

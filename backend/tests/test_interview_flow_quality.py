@@ -102,7 +102,9 @@ class TestFollowUpWriter(unittest.TestCase):
 
         with patch.object(llm_service, "is_active", return_value=True), patch.object(llm_service, "_mock_handler", handler):
             fu = asyncio.run(generate_follow_up_async(self.q, {"answer": "I'm not really sure.", "follow_up_gap": "x"}, "System Design"))
-        self.assertIn(fu["text"], router_service.SHORT_ANSWER_PROBES)
+        subject = self.q.get("subtopic") or "System Design"
+        self.assertIn(fu["text"], [p.format(subject=subject) for p in router_service.SHORT_ANSWER_PROBES])
+        self.assertIn(subject, fu["text"])
 
     def test_falls_back_when_llm_returns_junk(self):
         with patch.object(llm_service, "is_active", return_value=True), \
@@ -143,6 +145,50 @@ class TestClosingReply(unittest.TestCase):
     def test_real_question_is_acknowledged(self):
         self.assertIn("good question", handle_closing_inquiry("What does the team work on?")["text"].lower())
         self.assertIn("good question", handle_closing_inquiry("Is there no on-call rotation?")["text"].lower())
+
+
+class TestSilentSessionNotGraded(unittest.TestCase):
+    def test_speech_only_closing_does_not_produce_a_grade(self):
+        from app.services.score_fusion_service import fuse_session_scores
+        report = {"per_question_breakdown": [
+            {"question_id": 1, "content": {"score": None}, "speech_confidence": {"score": None}, "face_posture": {"score": None}},
+            {"question_id": 999, "topic": "Closing", "content": {"score": None}, "speech_confidence": {"score": 90.7}, "face_posture": {"score": None}},
+        ]}
+        fused = fuse_session_scores(report, "Technical")
+        self.assertIsNone(fused["overall_scores"]["composite_score"])
+        self.assertEqual(fused["classification"], "NOT_SCORED")
+        self.assertEqual(fused["total_questions"], 1)
+
+
+
+class TestUnansweredSession(unittest.TestCase):
+    """Session 63: nothing was said, yet it scored 45 (content 7/10 default, delivery from noise)."""
+
+    JUNK_SPEECH = {"volume_variability": 5226.4, "avg_clarity_proxy": 1.0, "total_pauses": 1, "avg_pause_length": 0.5}
+
+    def _q(self, qid, transcript, ev):
+        return {"question_id": qid, "question_text": "q", "topic": "T", "transcript": transcript,
+                "face_signals": {}, "speech_signals": self.JUNK_SPEECH, "evaluator_scores": ev, "word_timings": []}
+
+    def test_empty_answers_are_not_graded(self):
+        from app.services.scoring_engine import compute_question_score
+        from app.services.score_fusion_service import fuse_session_scores
+        ev = {"correctness": 0.0, "relevance": 0.0, "depth": 0.0, "classification": "OFF_TOPIC"}
+        qs = [compute_question_score(self._q(i, "", ev)) for i in (1, 2, 3)]
+        for q in qs:
+            self.assertFalse(q["answered"])
+            self.assertEqual(q["content"]["score"], 0.0)
+            self.assertIsNone(q["speech_confidence"]["score"])
+        fused = fuse_session_scores({"per_question_breakdown": qs}, "Technical")
+        self.assertEqual(fused["classification"], "NOT_SCORED")
+        self.assertIsNone(fused["overall_scores"]["composite_score"])
+
+    def test_zero_correctness_is_not_replaced_by_a_default(self):
+        from app.services.scoring_engine import compute_content_score
+        res = compute_content_score({"correctness": 0.0, "relevance": 0.0, "depth": 0.0, "classification": "OFF_TOPIC"},
+                                    transcript="I am going to the next slide")
+        self.assertEqual(res["raw_metrics"]["correctness"], 0.0)
+        self.assertLess(res["score"], 15)
 
 
 if __name__ == "__main__":

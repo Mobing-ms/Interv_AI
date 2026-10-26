@@ -239,6 +239,14 @@ class SkillGroups(BaseModel):
     domains: List[str] = Field(default_factory=list)
     soft: List[str] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_flat_list(cls, v):
+        # Older/seeded profiles store skills as one flat list; keep them instead of failing the whole profile
+        if isinstance(v, list):
+            return {"tools": [str(x) for x in v if x]}
+        return v
+
 
 class ProjectItem(BaseModel):
     title: str

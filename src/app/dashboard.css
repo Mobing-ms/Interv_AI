@@ -1,0 +1,56 @@
+/* Dashboard grid (from mockups/paper-dashboard.html) */
+.dash{max-width:none}
+.dash .grid{display:grid;grid-template-columns:repeat(12,1fr)}
+.dash .cell{padding:24px 28px 24px 0;border-bottom:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
+.dash .cell+.cell{padding-left:28px;border-left:1px solid var(--line)}
+.dash .cell.full{grid-column:1/-1;padding-left:0;border-left:0}
+.dash .cell.full+.cell{padding-left:0;border-left:0}
+.dash .notice{flex-direction:row;justify-content:space-between;align-items:center;gap:16px;font-size:14px}
+.dash .last{grid-column:span 5}
+.dash .score{display:flex;align-items:flex-end;gap:16px;margin-top:10px}
+.dash .score b{font:500 clamp(80px,7vw,112px)/.9 "IBM Plex Sans",sans-serif;letter-spacing:-.04em}
+.dash .score div{padding-bottom:8px;font-size:14px;color:var(--dim)}
+.dash .cls{font-size:14px;font-weight:500;color:var(--fg)}
+.dash .first{font-size:28px;margin-top:14px}
+.dash .mods{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:auto;padding-top:18px}
+.dash .mods div{font-size:13px;color:var(--dim)}.dash .mods b{display:block;font:500 20px "IBM Plex Mono",monospace;color:var(--fg)}
+.dash .stats{grid-column:span 7;display:grid;grid-template-columns:repeat(4,1fr);align-content:start}
+.dash .stats>div{padding:0 0 18px}
+.dash .stats b{display:block;font:500 30px/1.2 "IBM Plex Sans",sans-serif;letter-spacing:-.02em;margin-top:6px}
+.dash .stats small{color:var(--dim);font-size:12px}
+.dash .rhythm{grid-column:1/-1;margin-top:12px;padding-top:16px;border-top:1px solid var(--line)}
+.dash svg.ch{width:100%;height:160px;display:block;margin-top:8px;overflow:visible}
+.dash svg.ch .g{stroke:var(--line)}.dash svg.ch text{fill:var(--dim);font:11px "IBM Plex Sans"}
+.dash svg.ch .l{fill:none;stroke:var(--fg);stroke-width:1.5}
+.dash svg.ch circle{fill:var(--bg);stroke:var(--fg);stroke-width:1.5}
+.dash svg.ch circle.last{fill:var(--ink);stroke:var(--ink)}
+.dash .focus{grid-column:span 5}
+.dash .fl{margin-top:12px}
+.dash .fl button{display:grid;grid-template-columns:1fr 60px 70px;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line);font-size:14px;width:100%;text-align:left}
+.dash .fl button:hover .go{color:var(--ink)}
+.dash .fl small{display:block;color:var(--dim);font-size:12px}
+.dash .fl .d{font-size:13px;text-align:right}
+.dash .fl .go{font-size:13px;color:var(--dim);text-align:right}
+.dash .recent{grid-column:span 7}
+.dash .next{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr 1fr;padding-left:0!important;border-left:0!important}
+.dash .next a{padding:22px 24px 22px 0;display:block}
+.dash .next a+a{padding-left:24px;border-left:1px solid var(--line)}
+.dash .next h3{font:500 17px/1.3 "IBM Plex Sans",sans-serif;margin-top:6px}
+.dash .next p{color:var(--dim);font-size:14px;margin-top:6px}
+.dash .next a:hover h3{color:var(--ink)}
+@media(max-width:1000px){
+  .dash .grid>*{grid-column:1/-1!important;padding-left:0!important;border-left:0!important}
+  .dash .stats{grid-template-columns:1fr 1fr}
+  .dash .next{grid-template-columns:1fr}.dash .next a+a{padding-left:0;border-left:0;border-top:1px solid var(--line)}
+  .dash .notice{flex-direction:column;align-items:flex-start}
+}
+.dash .cell.focus,.dash .cell.last{padding-left:0;border-left:0}
+
+/* Fill the viewport like the mockup: the grid stretches to the window height */
+@media(min-width:1001px){
+  .page.dash{min-height:100vh;display:flex;flex-direction:column;padding-bottom:28px}
+  .dash .grid{flex:1;grid-template-rows:auto 1.15fr 1fr auto}
+  .dash .grid:not(:has(.notice)){grid-template-rows:1.15fr 1fr auto}
+  .dash svg.ch{height:clamp(160px,24vh,280px)}
+  .dash .fl{flex:1;display:flex;flex-direction:column}.dash .fl button{flex:1}
+}
