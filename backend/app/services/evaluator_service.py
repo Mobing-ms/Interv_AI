@@ -382,6 +382,87 @@ class LLMAnswerEvaluator(EvaluatorModuleProtocol):
         self.temperature = temperature
         self.use_deterministic_only = use_deterministic_only
 
+    def _build_user_prompt(self, question: Dict[str, Any], answer: str, code_kw_res: Dict[str, Any]) -> str:
+        return (
+            f"Question: {question.get('text')}\n"
+            f"Topic: {question.get('topic')}\n"
+            f"Question Type: {question.get('type', 'technical')}\n"
+            f"Expected Keywords: {question.get('expected_keywords', [])}\n"
+            f"Ideal Answer Points: {question.get('ideal_answer_points', [])}\n"
+            f"Code-Matched Keywords: {code_kw_res['matched']}\n"
+            f"Code-Missing Keywords: {code_kw_res['missing']}\n"
+            f"Candidate Transcript: {answer}\n"
+        )
+
+    @staticmethod
+    def _deterministic(question, answer, session_context, reason: str) -> Dict[str, Any]:
+        res = deterministic_evaluate(question, answer, session_context)
+        res["evaluation_source"] = "deterministic"
+        res["evaluation_note"] = reason
+        return res
+
+    def _merge_llm_result(self, parsed: Dict[str, Any], answer: str, code_kw_res, code_star_res) -> Dict[str, Any]:
+        classification = str(parsed.get("classification", "OK")).upper()
+        if classification not in ("STRONG", "OK", "WEAK_VAGUE", "OFF_TOPIC"):
+            classification = "OK"
+
+        def _num(key):
+            val = parsed.get(key)
+            if val is None:
+                raise ValueError(f"LLM evaluation missing '{key}'")
+            return float(val)
+
+        return {
+            "relevance": _num("relevance"),
+            "correctness": _num("correctness"),
+            "depth": _num("depth"),
+            "overall_score": _num("overall_score"),
+            "keyword_coverage": code_kw_res,  # Code-computed keyword coverage
+            "star_completeness": parsed.get("star_completeness", code_star_res),
+            "justification": str(parsed.get("justification", extract_quote_from_transcript(answer))),
+            "classification": classification,
+            "follow_up_gap": str(parsed.get("follow_up_gap", "elaborate further")),
+            "word_count": len(answer.split()),
+            "follow_up_needed": classification == "WEAK_VAGUE",
+            "evaluated_at": time.time(),
+            "evaluation_source": "llm",
+        }
+
+    async def evaluate_async(
+        self,
+        question: Dict[str, Any],
+        answer: str,
+        session_context: List[Dict[str, Any]],
+        session_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Non-blocking evaluation via the shared async LLM client (services/llm.py:
+        timeout + retries). Falls back to the deterministic rubric, labelled as such.
+        """
+        from app.services.llm import llm_service, LLMError
+        import httpx
+
+        if self.use_deterministic_only:
+            return self._deterministic(question, answer, session_context, "deterministic mode")
+        if not answer.strip():
+            return self._deterministic(question, answer, session_context, "no answer captured")
+        if not llm_service.is_active():
+            return self._deterministic(question, answer, session_context, "no LLM provider configured")
+
+        code_kw_res = compute_keyword_coverage(answer, question.get("expected_keywords", []), question.get("ideal_answer_points", []))
+        code_star_res = evaluate_star_completeness(answer, question)
+        try:
+            raw = await llm_service.call_raw_llm(
+                EVALUATION_SYSTEM_PROMPT,
+                self._build_user_prompt(question, answer, code_kw_res),
+                session_id=session_id,
+            )
+            parsed = json.loads(raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip())
+            return self._merge_llm_result(parsed, answer, code_kw_res, code_star_res)
+        except (LLMError, httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
+            logger.warning("[Evaluator][session_id=%s] LLM evaluation failed (%s); using deterministic evaluator", session_id or "none", e)
+            return self._deterministic(question, answer, session_context, "LLM evaluation failed")
+
     def evaluate(
         self,
         question: Dict[str, Any],
@@ -390,73 +471,13 @@ class LLMAnswerEvaluator(EvaluatorModuleProtocol):
         session_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Evaluates a candidate's answer and returns validated JSON output.
+        Synchronous wrapper for scripts/tests and worker threads. Must not be called
+        from the event loop thread (the orchestrator uses evaluate_async).
         """
-        # Always compute code-level keyword coverage first
-        expected_kw = question.get("expected_keywords", [])
-        ideal_pts = question.get("ideal_answer_points", [])
-        code_kw_res = compute_keyword_coverage(answer, expected_kw, ideal_pts)
-        code_star_res = evaluate_star_completeness(answer, question)
-
-        # If deterministic mode requested or offline, run deterministic evaluator
-        if self.use_deterministic_only:
-            return deterministic_evaluate(question, answer, session_context)
-
-        # Attempt LLM call if OpenAI/Gemini/other provider configured
+        import asyncio
         try:
-            from app.config import settings
-            api_key = getattr(settings, "OPENAI_API_KEY", None)
-            if not api_key:
-                # Default to deterministic evaluator when no key is set
-                return deterministic_evaluate(question, answer, session_context)
-
-            # Low temperature LLM prompt call
-            import openai
-            client = openai.OpenAI(api_key=api_key)
-            user_prompt = (
-                f"Question: {question.get('text')}\n"
-                f"Topic: {question.get('topic')}\n"
-                f"Question Type: {question.get('type', 'technical')}\n"
-                f"Expected Keywords: {expected_kw}\n"
-                f"Ideal Answer Points: {ideal_pts}\n"
-                f"Code-Matched Keywords: {code_kw_res['matched']}\n"
-                f"Code-Missing Keywords: {code_kw_res['missing']}\n"
-                f"Candidate Transcript: {answer}\n"
-            )
-
-            resp = client.chat.completions.create(
-                model=getattr(settings, "EVALUATION_MODEL", "gpt-4o-mini"),
-                temperature=self.temperature,
-                messages=[
-                    {"role": "system", "content": EVALUATION_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-            )
-            raw_content = resp.choices[0].message.content or "{}"
-            parsed = json.loads(raw_content)
-
-            # Validate and merge with code-level keyword coverage
-            classification = parsed.get("classification", "OK").upper()
-            if classification not in ("STRONG", "OK", "WEAK_VAGUE", "OFF_TOPIC"):
-                classification = "OK"
-
-            result = {
-                "relevance": float(parsed.get("relevance", 7.0)),
-                "correctness": float(parsed.get("correctness", 7.0)),
-                "depth": float(parsed.get("depth", 7.0)),
-                "overall_score": float(parsed.get("overall_score", 7.0)),
-                "keyword_coverage": code_kw_res,  # Code-computed keyword coverage
-                "star_completeness": parsed.get("star_completeness", code_star_res),
-                "justification": str(parsed.get("justification", extract_quote_from_transcript(answer))),
-                "classification": classification,
-                "follow_up_gap": str(parsed.get("follow_up_gap", "elaborate further")),
-                "word_count": len(answer.split()),
-                "follow_up_needed": classification == "WEAK_VAGUE",
-                "evaluated_at": time.time(),
-            }
-            return result
-
-        except Exception as e:
-            logger.warning("[Evaluator][session_id=%s] LLM evaluation call failed or not configured (%s); using deterministic evaluator", session_id or "none", e)
-            return deterministic_evaluate(question, answer, session_context)
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.evaluate_async(question, answer, session_context, session_id=session_id))
+        logger.error("LLMAnswerEvaluator.evaluate() called on the event loop; use evaluate_async(). Falling back to deterministic.")
+        return self._deterministic(question, answer, session_context, "sync call on event loop")

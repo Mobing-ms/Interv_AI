@@ -31,3 +31,8 @@ backend/.env
 # OS files
 .DS_Store
 Thumbs.db
+
+# Backend runtime data (sqlite db, uploads, recordings, TTS cache)
+.data/
+backend/storage/
+backend/intervai.db

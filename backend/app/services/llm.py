@@ -39,6 +39,8 @@ class LLMService:
             return True
         if self.provider in ("openai", "azure", "groq", "gemini") and bool(self.api_key):
             return True
+        if self.provider == "ollama":
+            return True
         return False
 
     async def generate_structured_async(
@@ -55,8 +57,39 @@ class LLMService:
             schema_cls=response_schema,
         )
 
-    async def call_raw_llm(self, system_prompt: str, user_prompt: str, session_id: Optional[int] = None) -> str:
-        """Invokes the configured LLM provider and returns the raw string response."""
+    async def call_raw_llm(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        session_id: Optional[int] = None,
+        retries: Optional[int] = None,
+    ) -> str:
+        """
+        The single entry point for LLM calls: async (httpx), bounded by LLM_TIMEOUT_SECONDS
+        per attempt, retried with exponential backoff on network errors / 5xx / 429.
+        """
+        attempts = (self.max_retries if retries is None else retries) + 1
+        last_exc: Optional[Exception] = None
+        for attempt in range(attempts):
+            try:
+                return await asyncio.wait_for(
+                    self._call_provider_once(system_prompt, user_prompt, session_id),
+                    timeout=self.timeout + 5.0,
+                )
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                code = e.response.status_code
+                if code != 429 and code < 500:
+                    raise LLMError(f"LLM provider returned HTTP {code}") from e
+            except (httpx.HTTPError, asyncio.TimeoutError) as e:
+                last_exc = e
+            if attempt < attempts - 1:
+                logger.warning("[LLM] attempt %d/%d failed (%s); retrying", attempt + 1, attempts, type(last_exc).__name__)
+                await asyncio.sleep(0.5 * (2 ** attempt))
+        raise LLMError(f"LLM provider unavailable after {attempts} attempts: {type(last_exc).__name__}") from last_exc
+
+    async def _call_provider_once(self, system_prompt: str, user_prompt: str, session_id: Optional[int] = None) -> str:
+        """One provider round trip; no retries."""
         prompt_size = len(system_prompt) + len(user_prompt)
         sess_tag = f"[session_id={session_id}] " if session_id else ""
         logger.info(f"[LLM]{sess_tag} Dispatching request to provider='{self.provider}' model='{self.model}' | Prompt length: {prompt_size} chars")
@@ -144,7 +177,7 @@ class LLMService:
 
         for attempt in range(retries + 1):
             try:
-                raw_response = await self.call_raw_llm(system_prompt, current_user_prompt, session_id=session_id)
+                raw_response = await self.call_raw_llm(system_prompt, current_user_prompt, session_id=session_id, retries=0)
 
                 # Strip markdown code fencing if LLM wraps in ```json ... ```
                 clean_response = raw_response.strip()
@@ -179,7 +212,7 @@ class LLMService:
                 else:
                     break
 
-            except (httpx.HTTPError, asyncio.TimeoutError) as net_err:
+            except (httpx.HTTPError, asyncio.TimeoutError, LLMError) as net_err:
                 last_error = str(net_err)
                 logger.warning(
                     f"[LLM]{sess_tag} Network/timeout error on attempt {attempt + 1}/{retries + 1}: {last_error}"
