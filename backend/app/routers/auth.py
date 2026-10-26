@@ -1,5 +1,5 @@
 import logging
-import random
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -37,7 +37,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 def generate_6digit_otp() -> str:
-    return f"{random.randint(100000, 999999)}"
+    return f"{secrets.randbelow(900000) + 100000}"
 
 
 def _try_link_guest_session(
