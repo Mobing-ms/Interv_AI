@@ -245,8 +245,12 @@ def health_check():
 
     # 4. Speech-to-Text Provider Check
     health["checks"]["stt_provider"] = {
-        "status": "ok",
+        "status": "mock" if settings.STT_PROVIDER.lower() == "mock" else "ok",
         "provider": settings.STT_PROVIDER,
+    }
+    health["checks"]["llm_provider"] = {
+        "status": "mock" if settings.LLM_PROVIDER.lower() == "mock" else "ok",
+        "provider": settings.LLM_PROVIDER,
     }
 
     status_code = status.HTTP_200_OK if health["status"] == "healthy" else status.HTTP_503_SERVICE_UNAVAILABLE

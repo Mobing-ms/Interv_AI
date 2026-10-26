@@ -527,7 +527,7 @@ class ConsentOut(BaseModel):
 class SessionCalibrationCreate(BaseModel):
     face_baseline: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Neutral expression, gaze center, head pose")
     voice_baseline: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Average volume, pitch range, speaking rate")
-    background_noise_level_db: Optional[float] = Field(default=-50.0, description="Ambient noise floor in dBFS")
+    background_noise_level_db: Optional[float] = Field(default=None, description="Ambient noise floor in dBFS (null = not measured)")
     calibration_text: Optional[str] = Field(
         default="I am ready to begin my interview with IntervAI, showcasing my system design, technical problem-solving, and communication skills.",
         description="Sentence read during calibration",
@@ -540,7 +540,7 @@ class SessionCalibrationOut(BaseModel):
     user_id: Optional[int] = None
     face_baseline: Dict[str, Any]
     voice_baseline: Dict[str, Any]
-    background_noise_level_db: float
+    background_noise_level_db: Optional[float] = None
     calibration_text: Optional[str]
     calibrated_at: datetime
 

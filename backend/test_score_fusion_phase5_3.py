@@ -215,12 +215,12 @@ class TestScoreFusionPhase53(unittest.TestCase):
         self.assertGreater(comp_2["trend"]["trend_delta"], 0)
 
     def test_cohort_percentile_seeded_vs_platform(self):
-        """Tests that cohort percentile uses labeled seeded benchmark when N < 5, and platform cohort when N >= 5."""
-        # Case A: Seeded benchmark (0 past cohort scores)
+        """With N < 5 no percentile is invented; with N >= 5 the platform cohort is used."""
+        # Case A: too few real sessions -> no percentile, no made-up benchmark
         seeded_res = compute_cohort_percentile(score=85.0, round_type="Technical", past_cohort_scores=[])
-        self.assertTrue(seeded_res["is_seeded_benchmark"])
-        self.assertIn("Industry Standard", seeded_res["benchmark_label"])
-        self.assertGreater(seeded_res["percentile"], 80.0)
+        self.assertFalse(seeded_res["is_seeded_benchmark"])
+        self.assertIsNone(seeded_res["percentile"])
+        self.assertIsNone(seeded_res["delta_vs_cohort"])
 
         # Case B: Platform cohort (5+ scores: [60, 65, 70, 75, 80, 85, 90])
         cohort_sample = [60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0]

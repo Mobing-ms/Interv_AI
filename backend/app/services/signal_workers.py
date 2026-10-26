@@ -230,35 +230,34 @@ class VideoSignalWorker:
         base_head = face_baseline.get("head_pose", {"yaw": 0.0, "pitch": 0.0, "roll": 0.0})
 
         if sim_faces is not None:
-            return self._generate_fallback_metrics(session_id, base_head, base_gaze, face_count=sim_faces)
+            # Explicit face-count input (tests / client-side detector): only presence is known.
+            return self._face_count_only_metrics(sim_faces)
 
         img = self.decode_frame(frame_data)
 
-        # Fallback if image decode or face mesh detection fails on synthetic test chunks or solutions unavailable
+        # Nothing measurable: undecodable frame or MediaPipe unavailable. Report nothing
+        # rather than plausible-looking numbers.
         if img is None or self._face_mesh is None:
-            return self._generate_fallback_metrics(session_id, base_head, base_gaze)
+            if self._face_mesh is None:
+                logger.debug("Video frame not analysed for session #%d: face mesh unavailable", session_id)
+            return {}
 
         h, w, _ = img.shape
         rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         try:
             results = self._face_mesh.process(rgb_img)
-        except Exception as e:
-            logger.debug("FaceMesh processing exception: %s", e)
-            return self._generate_fallback_metrics(session_id, base_head, base_gaze)
+        except Exception:
+            logger.warning("FaceMesh processing failed for session #%d", session_id, exc_info=True)
+            return {}
 
         if not results or not getattr(results, "multi_face_landmarks", None):
+            # No face: presence and eye contact are measured (zero); pose/expression are not.
             return {
                 "face_present": 0.0,
                 "face_count": 0.0,
                 "second_face_detected": 0.0,
                 "multiple_faces": 0.0,
                 "eye_contact": 0.0,
-                "head_yaw": 0.0,
-                "head_pitch": 0.0,
-                "head_roll": 0.0,
-                "emotion_valence": 0.0,
-                "posture_alignment": 0.8,
-                "movement_level": 0.0,
             }
 
         num_faces = len(results.multi_face_landmarks)
@@ -328,10 +327,10 @@ class VideoSignalWorker:
             displacement = float(np.mean(np.linalg.norm(pts[:, :2] - prev[:, :2], axis=1)))
             movement_level = round(min(1.0, displacement * 25.0), 3)
         else:
-            movement_level = 0.05
+            movement_level = None  # first frame: no previous frame to compare
         self._prev_landmarks[session_id] = pts
 
-        return {
+        out = {
             "face_present": face_present,
             "face_count": face_count,
             "second_face_detected": second_face_detected,
@@ -344,30 +343,22 @@ class VideoSignalWorker:
             "posture_alignment": posture,
             "movement_level": movement_level,
         }
+        return {k: v for k, v in out.items() if v is not None}
 
-    def _generate_fallback_metrics(
-        self,
-        session_id: int,
-        base_head: Dict[str, Any],
-        base_gaze: Dict[str, Any],
-        face_count: float = 1.0,
-    ) -> Dict[str, float]:
-        """Provides baseline-consistent plausible signals when image is simulated."""
+    @staticmethod
+    def _face_count_only_metrics(face_count: float) -> Dict[str, float]:
+        """Only face presence/count is known; every other metric is left unmeasured."""
         face_present = 1.0 if face_count >= 1.0 else 0.0
         second_face = 1.0 if face_count >= 2.0 else 0.0
-        return {
+        out = {
             "face_present": face_present,
             "face_count": face_count,
             "second_face_detected": second_face,
             "multiple_faces": second_face,
-            "eye_contact": 0.92 if face_present else 0.0,
-            "head_yaw": round(base_head.get("yaw", 0.0) + 0.5, 2) if face_present else 0.0,
-            "head_pitch": round(base_head.get("pitch", 0.0) - 0.3, 2) if face_present else 0.0,
-            "head_roll": round(base_head.get("roll", 0.0) + 0.1, 2) if face_present else 0.0,
-            "emotion_valence": 0.15 if face_present else 0.0,
-            "posture_alignment": 0.95 if face_present else 0.8,
-            "movement_level": 0.04 if face_present else 0.0,
         }
+        if not face_present:
+            out["eye_contact"] = 0.0
+        return out
 
 
 # =============================================================================
@@ -425,7 +416,10 @@ class AudioSignalWorker:
         baseline = calibration or {}
         voice_baseline = baseline.get("voice_baseline", {})
         base_vol_db = voice_baseline.get("average_volume_db", -25.0)
-        base_noise_db = baseline.get("background_noise_level_db", -50.0)
+        # Algorithm reference when no noise floor was measured (not reported as a metric).
+        base_noise_db = baseline.get("background_noise_level_db")
+        if base_noise_db is None:
+            base_noise_db = -50.0
         base_pitch_range = voice_baseline.get("pitch_range_hz", [100.0, 220.0])
         base_pitch_mean = sum(base_pitch_range) / 2.0
 
@@ -441,7 +435,7 @@ class AudioSignalWorker:
 
         vol_db = round(20 * math.log10(rms + 1e-4), 2)
         st["volumes"].append(rms)
-        vol_variability = round(float(np.std(st["volumes"][-30:])), 2) if len(st["volumes"]) > 2 else 15.0
+        vol_variability = round(float(np.std(st["volumes"][-30:])), 2) if len(st["volumes"]) > 2 else None
 
         # 2. Pause detection
         # Silence defined by low energy compared to baseline noise floor
@@ -462,7 +456,7 @@ class AudioSignalWorker:
         )
 
         # 3. Pitch estimation via autocorrelation
-        pitch_hz = base_pitch_mean
+        pitch_hz = None
         if not is_silence and audio_bytes and len(audio_bytes) >= 640:
             try:
                 samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
@@ -475,12 +469,14 @@ class AudioSignalWorker:
                     peak_lag = min_lag + int(np.argmax(corr[min_lag:max_lag]))
                     if peak_lag > 0 and corr[peak_lag] > 0.3 * corr[0]:
                         pitch_hz = round(self.sample_rate / peak_lag, 1)
-            except Exception:
-                pitch_hz = base_pitch_mean
+            except (ValueError, FloatingPointError):
+                logger.debug("Pitch estimation failed for session #%d", session_id, exc_info=True)
+                pitch_hz = None
 
-        st["pitches"].append(pitch_hz)
-        pitch_mean = round(float(np.mean(st["pitches"][-20:])), 1)
-        pitch_variance = round(float(np.var(st["pitches"][-20:])), 2) if len(st["pitches"]) > 2 else 25.0
+        if pitch_hz is not None:
+            st["pitches"].append(pitch_hz)
+        pitch_mean = round(float(np.mean(st["pitches"][-20:])), 1) if st["pitches"] else None
+        pitch_variance = round(float(np.var(st["pitches"][-20:])), 2) if len(st["pitches"]) > 2 else None
 
         # 4. Filler Word Analysis
         if stt_text:
@@ -490,29 +486,29 @@ class AudioSignalWorker:
             st["total_words"] += len(words)
             st["filler_count"] += fillers_in_chunk
 
-        filler_rate = round(st["filler_count"] / max(1, st["total_words"]), 3)
+        # Without any transcript words, filler metrics are unknown, not zero.
+        filler_rate = round(st["filler_count"] / st["total_words"], 3) if st["total_words"] else None
 
         # 5. Speech Pace (WPM)
         voiced_mins = max(0.01, st["voiced_duration"] / 60.0)
-        pace_wpm = round(st["total_words"] / voiced_mins, 1) if st["total_words"] > 0 else 135.0
-        # Bound pace to plausible conversational limits
-        pace_wpm = max(60.0, min(240.0, pace_wpm))
+        pace_wpm = round(st["total_words"] / voiced_mins, 1) if st["total_words"] > 0 and st["voiced_duration"] > 0 else None
 
         # 6. Clarity proxy (Voiced energy vs silence ratio)
         clarity = round(max(0.4, min(1.0, 1.0 - (st["silent_duration"] / max(1.0, st["voiced_duration"] + 1.0)))), 2)
 
-        return {
+        out = {
             "volume_rms": round(rms, 1),
             "volume_variability": vol_variability,
             "pitch_hz": pitch_mean,
             "pitch_variance": pitch_variance,
             "speech_pace_wpm": pace_wpm,
-            "filler_count": float(st["filler_count"]),
+            "filler_count": float(st["filler_count"]) if st["total_words"] else None,
             "filler_rate": filler_rate,
             "pause_count": float(st["pause_count"]),
             "avg_pause_length": avg_pause_len,
             "clarity_proxy": clarity,
         }
+        return {k: v for k, v in out.items() if v is not None}
 
 
 # =============================================================================

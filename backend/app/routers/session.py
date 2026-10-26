@@ -555,25 +555,10 @@ def record_session_calibration(
     """
     session = _resolve_session(id, auth_ctx, db)
 
-    # Defaults for face baseline if partial or empty
-    face_data = body.face_baseline or {
-        "neutral_score": 0.94,
-        "gaze_center": {"x": 0.5, "y": 0.5},
-        "head_pose": {"pitch": 0.0, "yaw": 0.0, "roll": 0.0},
-    }
-
-    # Defaults for voice baseline if partial or empty
-    voice_data = body.voice_baseline or {
-        "average_volume_db": -24.0,
-        "pitch_range_hz": [110.0, 220.0],
-        "speaking_rate_wpm": 130.0,
-    }
-
-    noise_db = (
-        body.background_noise_level_db
-        if body.background_noise_level_db is not None
-        else -50.0
-    )
+    # Store only what the client actually measured; absent baselines stay empty/null.
+    face_data = body.face_baseline or {}
+    voice_data = body.voice_baseline or {}
+    noise_db = body.background_noise_level_db
 
     now = datetime.now(timezone.utc)
 
@@ -817,9 +802,9 @@ def get_question_signals(
     # 1. Fetch calibration record
     cal_rec = db.query(SessionCalibration).filter(SessionCalibration.session_id == id).first()
     calibration_baseline = {
-        "face_baseline": cal_rec.face_baseline if cal_rec else {},
-        "voice_baseline": cal_rec.voice_baseline if cal_rec else {},
-        "background_noise_level_db": cal_rec.background_noise_level_db if cal_rec else -50.0,
+        "face_baseline": (cal_rec.face_baseline or {}) if cal_rec else {},
+        "voice_baseline": (cal_rec.voice_baseline or {}) if cal_rec else {},
+        "background_noise_level_db": cal_rec.background_noise_level_db if cal_rec else None,
     }
 
     # 2. Retrieve signals from store (in-memory cache or DB)
@@ -834,46 +819,54 @@ def get_question_signals(
             by_metric[m] = []
         by_metric[m].append(s["value"])
 
-    def _mean(metric_name: str, default: float = 0.0) -> float:
+    # Unmeasured metrics are reported as null, never as plausible defaults.
+    def _mean(metric_name: str) -> Optional[float]:
         vals = by_metric.get(metric_name, [])
-        return round(float(sum(vals) / len(vals)), 3) if vals else default
+        return round(float(sum(vals) / len(vals)), 3) if vals else None
 
-    def _max(metric_name: str, default: float = 0.0) -> float:
+    def _max(metric_name: str) -> Optional[float]:
         vals = by_metric.get(metric_name, [])
-        return round(float(max(vals)), 3) if vals else default
+        return round(float(max(vals)), 3) if vals else None
+
+    def _maxint(metric_name: str) -> Optional[int]:
+        v = _max(metric_name)
+        return int(v) if v is not None else None
+
+    def _delta(a: Optional[float], b: Optional[float]) -> Optional[float]:
+        return round(a - b, 2) if a is not None and b is not None else None
 
     # Face summary
     face_summary = {
-        "face_present_ratio": _mean("face_present", 1.0),
-        "avg_eye_contact": _mean("eye_contact", 0.90),
-        "avg_head_yaw": _mean("head_yaw", 0.0),
-        "avg_head_pitch": _mean("head_pitch", 0.0),
-        "avg_head_roll": _mean("head_roll", 0.0),
-        "avg_emotion_valence": _mean("emotion_valence", 0.1),
-        "avg_posture_alignment": _mean("posture_alignment", 0.95),
-        "avg_movement_level": _mean("movement_level", 0.05),
+        "face_present_ratio": _mean("face_present"),
+        "avg_eye_contact": _mean("eye_contact"),
+        "avg_head_yaw": _mean("head_yaw"),
+        "avg_head_pitch": _mean("head_pitch"),
+        "avg_head_roll": _mean("head_roll"),
+        "avg_emotion_valence": _mean("emotion_valence"),
+        "avg_posture_alignment": _mean("posture_alignment"),
+        "avg_movement_level": _mean("movement_level"),
     }
 
     # Speech summary
     speech_summary = {
-        "avg_speech_pace_wpm": _mean("speech_pace_wpm", 135.0),
-        "total_filler_words": int(_max("filler_count", 0)),
-        "avg_filler_rate": _mean("filler_rate", 0.0),
-        "avg_pitch_hz": _mean("pitch_hz", 150.0),
-        "pitch_variance": _mean("pitch_variance", 25.0),
-        "avg_volume_rms": _mean("volume_rms", 400.0),
-        "volume_variability": _mean("volume_variability", 20.0),
-        "total_pause_count": int(_max("pause_count", 0)),
-        "avg_pause_length_sec": _mean("avg_pause_length", 0.0),
-        "avg_clarity_proxy": _mean("clarity_proxy", 0.88),
+        "avg_speech_pace_wpm": _mean("speech_pace_wpm"),
+        "total_filler_words": _maxint("filler_count"),
+        "avg_filler_rate": _mean("filler_rate"),
+        "avg_pitch_hz": _mean("pitch_hz"),
+        "pitch_variance": _mean("pitch_variance"),
+        "avg_volume_rms": _mean("volume_rms"),
+        "volume_variability": _mean("volume_variability"),
+        "total_pause_count": _maxint("pause_count"),
+        "avg_pause_length_sec": _mean("avg_pause_length"),
+        "avg_clarity_proxy": _mean("clarity_proxy"),
     }
 
     # Comparison vs Calibration Baseline
     baseline_face = calibration_baseline.get("face_baseline", {})
     comparison = {
-        "head_yaw_delta_from_baseline": round(face_summary["avg_head_yaw"] - baseline_face.get("head_pose", {}).get("yaw", 0.0), 2),
-        "head_pitch_delta_from_baseline": round(face_summary["avg_head_pitch"] - baseline_face.get("head_pose", {}).get("pitch", 0.0), 2),
-        "voice_volume_above_noise_db": round(speech_summary["avg_volume_rms"] - max(1.0, calibration_baseline.get("background_noise_level_db", -50.0)), 2),
+        "head_yaw_delta_from_baseline": _delta(face_summary["avg_head_yaw"], (baseline_face.get("head_pose") or {}).get("yaw")),
+        "head_pitch_delta_from_baseline": _delta(face_summary["avg_head_pitch"], (baseline_face.get("head_pose") or {}).get("pitch")),
+        "voice_volume_above_noise_db": _delta(speech_summary["avg_volume_rms"], calibration_baseline.get("background_noise_level_db")),
         "eye_contact_relative_to_baseline": face_summary["avg_eye_contact"],
     }
 

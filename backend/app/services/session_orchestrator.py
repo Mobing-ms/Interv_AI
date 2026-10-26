@@ -553,10 +553,11 @@ class SessionOrchestrator:
                     "subtopic": curr_q.get("subtopic"),
                     "is_follow_up": curr_q.get("is_follow_up", False),
                     "answer": ans_text,
-                    "relevance": eval_res.get("relevance", 7.0),
-                    "correctness": eval_res.get("correctness", 7.0),
-                    "depth": eval_res.get("depth", 7.0),
-                    "score": eval_res.get("overall_score", eval_res.get("score", 7.0)),
+                    "relevance": eval_res.get("relevance"),
+                    "correctness": eval_res.get("correctness"),
+                    "depth": eval_res.get("depth"),
+                    "score": eval_res.get("overall_score", eval_res.get("score")),
+                    "evaluation_source": eval_res.get("evaluation_source"),
                     "classification": eval_res.get("classification", "OK"),
                     "feedback": eval_res.get("feedback", eval_res.get("justification", "")),
                     "justification": eval_res.get("justification", ""),
@@ -676,8 +677,8 @@ class SessionOrchestrator:
                 await self.emit_avatar_speak(closing_text)
 
                 # Compile final summary
-                scores = [c["score"] for c in self.state.session_context if "score" in c]
-                avg_score = round(sum(scores) / max(1, len(scores)), 1) if scores else 8.0
+                scores = [c["score"] for c in self.state.session_context if c.get("score") is not None]
+                avg_score = round(sum(scores) / len(scores), 1) if scores else None
                 topics_covered = list(set([c.get("topic") for c in self.state.session_context if c.get("topic")]))
 
                 summary = {

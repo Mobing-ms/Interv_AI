@@ -264,9 +264,10 @@ def build_improvement_plan(session_result: Dict[str, Any]) -> List[Dict[str, Any
     """
     actions: List[Dict[str, Any]] = []
     weak_areas = session_result.get("weak_areas", [])
-    speech_score = float(session_result.get("speech_score", 75.0))
-    face_score = float(session_result.get("face_score", 75.0))
-    content_score = float(session_result.get("content_score", 75.0))
+    # Unmeasured components produce no speech/face actions (no evidence either way).
+    speech_score = session_result.get("speech_score")
+    face_score = session_result.get("face_score")
+    content_score = session_result.get("content_score")
     round_type = session_result.get("round_type", "Technical")
 
     # 1. Actions from identified weak areas
@@ -302,7 +303,7 @@ def build_improvement_plan(session_result: Dict[str, Any]) -> List[Dict[str, Any
         })
 
     # 2. Check Speech / Vocal Confidence
-    if speech_score < 75.0 or (len(actions) < 3 and speech_score < 85.0):
+    if speech_score is not None and (speech_score < 75.0 or (len(actions) < 3 and speech_score < 85.0)):
         actions.append({
             "id": f"action-{len(actions) + 1}",
             "title": "Calibrate Vocal Cadence & Eliminate Filler Words",
@@ -320,7 +321,7 @@ def build_improvement_plan(session_result: Dict[str, Any]) -> List[Dict[str, Any
         })
 
     # 3. Check Face / Composure
-    if face_score < 70.0 or (len(actions) < 3 and face_score < 80.0):
+    if face_score is not None and (face_score < 70.0 or (len(actions) < 3 and face_score < 80.0)):
         actions.append({
             "id": f"action-{len(actions) + 1}",
             "title": "Strengthen Camera Presence & Visual Composure",
@@ -345,7 +346,7 @@ def build_improvement_plan(session_result: Dict[str, Any]) -> List[Dict[str, Any
                 "topic": "System Design",
                 "priority": "MEDIUM",
                 "target_score": 90.0,
-                "current_score": round(content_score, 1),
+                "current_score": round(content_score, 1) if content_score is not None else None,
                 "description": (
                     "Elevate your answers by proactively citing production constraints: p99 latency SLAs, "
                     "cache invalidation thundering-herd mitigations, and database failover scenarios."

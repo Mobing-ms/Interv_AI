@@ -112,6 +112,24 @@ def get_round_type_weights(round_type: Optional[str]) -> Dict[str, float]:
 # 2. SCORE FUSION (PURE FUNCTION)
 # =============================================================================
 
+def _score_or_none(module: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not module:
+        return None
+    v = module.get("score")
+    return None if v is None else float(v)
+
+
+def _mean(vals: List[Optional[float]]) -> Optional[float]:
+    vals = [v for v in vals if v is not None]
+    return round(sum(vals) / len(vals), 1) if vals else None
+
+
+def _weighted(parts) -> Optional[float]:
+    avail = [(v, w) for v, w in parts if v is not None and w > 0]
+    tw = sum(w for _, w in avail)
+    return sum(v * w for v, w in avail) / tw if avail and tw > 0 else None
+
+
 def fuse_session_scores(
     raw_scoring_report: Dict[str, Any],
     round_type: str,
@@ -142,13 +160,13 @@ def fuse_session_scores(
     composite_list = []
 
     for q in raw_scoring_report.get("per_question_breakdown", []):
-        c_score = float(q.get("content", {}).get("score", 70.0))
-        s_score = float(q.get("speech_confidence", {}).get("score", 70.0))
-        f_score = float(q.get("face_posture", {}).get("score", 70.0))
+        c_score = _score_or_none(q.get("content"))
+        s_score = _score_or_none(q.get("speech_confidence"))
+        f_score = _score_or_none(q.get("face_posture"))
 
-        # Calculate fused question score
-        q_fused = round((c_score * w_content) + (s_score * w_speech) + (f_score * w_face), 1)
-        q_fused = max(0.0, min(100.0, q_fused))
+        # Fused question score over measured modules only (weights renormalized)
+        q_fused = _weighted([(c_score, w_content), (s_score, w_speech), (f_score, w_face)])
+        q_fused = max(0.0, min(100.0, round(q_fused, 1))) if q_fused is not None else None
 
         content_list.append(c_score)
         speech_list.append(s_score)
@@ -160,19 +178,15 @@ def fuse_session_scores(
         q_copy["weights_used"] = weights_used
         questions_fused.append(q_copy)
 
-    if composite_list:
-        avg_content = round(sum(content_list) / len(content_list), 1)
-        avg_speech = round(sum(speech_list) / len(speech_list), 1)
-        avg_face = round(sum(face_list) / len(face_list), 1)
-        overall_fused = round((avg_content * w_content) + (avg_speech * w_speech) + (avg_face * w_face), 1)
-        overall_fused = max(0.0, min(100.0, overall_fused))
-    else:
-        avg_content = 0.0
-        avg_speech = 0.0
-        avg_face = 0.0
-        overall_fused = 0.0
+    avg_content = _mean(content_list)
+    avg_speech = _mean(speech_list)
+    avg_face = _mean(face_list)
+    overall_fused = _weighted([(avg_content, w_content), (avg_speech, w_speech), (avg_face, w_face)])
+    overall_fused = max(0.0, min(100.0, round(overall_fused, 1))) if overall_fused is not None else None
 
-    if overall_fused >= 80.0:
+    if overall_fused is None:
+        classification = "NOT_SCORED"
+    elif overall_fused >= 80.0:
         classification = "STRONG"
     elif overall_fused >= 60.0:
         classification = "AVERAGE"
@@ -213,9 +227,9 @@ SEEDED_BENCHMARKS: Dict[str, Dict[str, float]] = {
 def compute_cohort_percentile(score: float, round_type: str, past_cohort_scores: List[float]) -> Dict[str, Any]:
     """
     Computes candidate's cohort percentile rank.
-    If fewer than 5 recorded sessions in cohort, uses a calibrated industry standard benchmark.
+    If fewer than 5 recorded sessions exist in the cohort, no percentile is reported.
     """
-    if len(past_cohort_scores) >= 5:
+    if score is not None and len(past_cohort_scores) >= 5:
         # Empirical percentile from platform candidates
         below_count = sum(1 for s in past_cohort_scores if s <= score)
         percentile = round((below_count / len(past_cohort_scores)) * 100.0, 1)
@@ -231,30 +245,14 @@ def compute_cohort_percentile(score: float, round_type: str, past_cohort_scores:
             "delta_vs_cohort": round(score - cohort_mean, 1),
         }
 
-    # Fallback to seeded industry benchmark
-    key = str(round_type).lower()
-    bench = SEEDED_BENCHMARKS.get("default")
-    for b_key, b_val in SEEDED_BENCHMARKS.items():
-        if b_key in key:
-            bench = b_val
-            break
-
-    mean = bench["mean"]
-    std = bench["std"]
-
-    # Compute normal CDF: percentile = 0.5 * (1 + erf((x - mean)/(std * sqrt(2))))
-    z = (score - mean) / max(1.0, std * math.sqrt(2.0))
-    cdf = 0.5 * (1.0 + math.erf(z))
-    percentile = round(max(2.0, min(99.0, cdf * 100.0)), 1)
-    delta_vs_cohort = round(score - mean, 1)
-
+    # Not enough real sessions to compare against. We do not invent a benchmark.
     return {
-        "percentile": percentile,
-        "cohort_mean": mean,
+        "percentile": None,
+        "cohort_mean": None,
         "cohort_size": len(past_cohort_scores),
-        "is_seeded_benchmark": True,
-        "benchmark_label": f"Industry Standard Benchmark ({round_type.title()} Cohort)",
-        "delta_vs_cohort": delta_vs_cohort,
+        "is_seeded_benchmark": False,
+        "benchmark_label": "Not enough sessions yet for a cohort comparison",
+        "delta_vs_cohort": None,
     }
 
 
@@ -278,10 +276,18 @@ def compute_session_comparisons(
         close_db = True
 
     try:
-        # 1. User's own past sessions
+        if current_score is None:
+            return {
+                "baseline": {"user_baseline_score": None, "delta": None, "is_first_session": None,
+                             "summary": "Session was not scored", "total_past_sessions": None},
+                "trend": {"direction": "not_scored", "trend_delta": None, "timeline": [], "summary": "Session was not scored"},
+                "cohort": compute_cohort_percentile(None, round_type, []),
+            }
+        # 1. User's own past sessions (only scored ones)
         past_user_results = (
             db.query(SessionResult)
-            .filter(SessionResult.user_id == user_id, SessionResult.session_id != session_id)
+            .filter(SessionResult.user_id == user_id, SessionResult.session_id != session_id,
+                    SessionResult.overall_score.isnot(None))
             .order_by(SessionResult.created_at.asc())
             .all()
         )
@@ -335,7 +341,7 @@ def compute_session_comparisons(
             .filter(SessionResult.round_type.ilike(f"%{round_type[:4]}%"), SessionResult.session_id != session_id)
             .all()
         )
-        cohort_scores = [c.overall_score for c in cohort_results]
+        cohort_scores = [c.overall_score for c in cohort_results if c.overall_score is not None]
         cohort_comparison = compute_cohort_percentile(current_score, round_type, cohort_scores)
 
         return {
@@ -384,10 +390,12 @@ def rank_weak_areas(
         topic = str(q.get("topic", "General")).strip()
         q_id = q.get("question_id", 1)
         q_text = q.get("question_text", f"Question #{q_id}")
-        f_score = float(q.get("fused_score", 70.0))
-        c_score = float(q.get("content", {}).get("score", 70.0))
-        s_score = float(q.get("speech_confidence", {}).get("score", 70.0))
-        f_face = float(q.get("face_posture", {}).get("score", 70.0))
+        if q.get("fused_score") is None:
+            continue  # unscored question: no evidence either way
+        f_score = float(q["fused_score"])
+        c_score = _score_or_none(q.get("content"))
+        s_score = _score_or_none(q.get("speech_confidence"))
+        f_face = _score_or_none(q.get("face_posture"))
 
         if topic not in topic_data:
             topic_data[topic] = {
@@ -574,7 +582,9 @@ def execute_u_memory_update(
     # Update rolling topic averages
     for q in per_question_fused:
         topic = str(q.get("topic", "General")).strip()
-        q_score = float(q.get("fused_score", 70.0))
+        if q.get("fused_score") is None:
+            continue
+        q_score = float(q["fused_score"])
 
         if topic in current_topics:
             old_score = float(current_topics[topic])
@@ -602,7 +612,7 @@ def execute_u_memory_update(
         q_id = q.get("question_id", 1)
         q_text = str(q.get("question_text") or f"Question #{q_id}").strip()
         topic = str(q.get("topic") or "General").strip()
-        q_score = float(q.get("fused_score", overall_score))
+        q_score = float(q["fused_score"]) if q.get("fused_score") is not None else None
 
         norm_text = normalize_question_text(q_text)
         q_hash = hashlib.sha256(norm_text.encode("utf-8")).hexdigest()
