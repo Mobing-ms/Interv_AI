@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import bcrypt
@@ -303,7 +304,7 @@ def get_current_user_or_guest(
                 guest_session_id=payload.get("session_id"),
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
     # 3. Try guest_token cookie
     if guest_cookie:
@@ -316,7 +317,7 @@ def get_current_user_or_guest(
                 guest_session_id=payload.get("session_id"),
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
@@ -57,7 +58,7 @@ def ensure_user_memory_updated(user_id: int, db: Session) -> None:
             try:
                 process_and_persist_session_result(session_id=sess.id, db=db)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
 
 def load_user_context(user_id: int, db: Session) -> UserContextOut:

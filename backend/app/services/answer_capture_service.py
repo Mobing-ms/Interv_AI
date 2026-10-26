@@ -72,7 +72,7 @@ class VADDetector:
                     if self.vad.is_speech(frame, self.sample_rate):
                         speech_frames += 1
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
             if num_frames > 0 and (speech_frames / num_frames) >= 0.3:
                 return True
 
@@ -519,7 +519,7 @@ class AnswerStorageManager:
                 with open(transcript_path, "r", encoding="utf-8") as f:
                     transcript_content = json.load(f)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
         return {
             "session_id": session_id,
