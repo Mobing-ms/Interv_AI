@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Backgro
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db, SessionLocal
 from app.models import User, CVDocument
 from app.auth import get_current_user
@@ -22,12 +23,7 @@ from app.services.cv_structuring import parse_and_cross_check_cv
 
 router = APIRouter(prefix="/cv", tags=["CV Upload, Extraction & Structuring"])
 
-STORAGE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "storage",
-    "cv_uploads"
-)
-os.makedirs(STORAGE_DIR, exist_ok=True)
+STORAGE_DIR = settings.data_path("storage", "cv_uploads")
 
 
 def sanitize_filename(filename: str) -> str:

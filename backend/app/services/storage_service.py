@@ -51,11 +51,8 @@ class LocalStorageProvider(BaseStorageProvider):
         if base_dir:
             self.base_dir = base_dir
         else:
-            self.base_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                "storage",
-                "sessions",
-            )
+            from app.config import settings
+            self.base_dir = settings.data_path("storage", "sessions")
         os.makedirs(self.base_dir, exist_ok=True)
 
     def _resolve_path(self, destination_key: str) -> str:

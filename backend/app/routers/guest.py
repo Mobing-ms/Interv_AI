@@ -267,13 +267,10 @@ async def upload_guest_cv(
             detail=err.message,
         )
 
-    storage_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "storage",
-        "cv_uploads",
-    )
-    os.makedirs(storage_dir, exist_ok=True)
-    file_key = f"guest_{uuid.uuid4().hex}_{filename}"
+    storage_dir = settings.data_path("storage", "cv_uploads")
+    from app.routers.cv import sanitize_filename
+    # Never let a client-supplied filename choose the path (no "../").
+    file_key = f"guest_{uuid.uuid4().hex}_{sanitize_filename(os.path.basename(filename))}"
     file_path = os.path.join(storage_dir, file_key)
 
     with open(file_path, "wb") as f:

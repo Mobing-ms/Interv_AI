@@ -420,12 +420,10 @@ class AnswerStorageManager:
     """
 
     def __init__(self, base_dir: Optional[str] = None):
-        default_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "storage",
-            "sessions",
-        )
-        self.base_dir = base_dir or default_dir
+        if not base_dir:
+            from app.config import settings
+            base_dir = settings.data_path("storage", "sessions")
+        self.base_dir = base_dir
         os.makedirs(self.base_dir, exist_ok=True)
 
 
