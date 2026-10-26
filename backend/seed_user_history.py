@@ -19,7 +19,8 @@ from app.models import User, UserMemory, AskedQuestion
 from app.auth import hash_password
 from app.services.interview_context import load_user_context
 
-Base.metadata.create_all(bind=engine)
+from run_migrations import run_database_migrations
+run_database_migrations()
 
 
 def seed_history_for_user(email: str = "alex@intervai.dev"):

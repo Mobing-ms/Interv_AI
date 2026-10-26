@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -96,12 +96,18 @@ class Settings(BaseSettings):
     # Shared secret for the /session/maintenance/* endpoints (header X-Maintenance-Token).
     MAINTENANCE_TOKEN: str = ""
     WS_SERVER_PING_SECONDS: float = 15.0
+    # Run `alembic upgrade head` on startup. None -> on outside production, off in production.
+    AUTO_MIGRATE: Optional[bool] = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore"
     )
+
+    @property
+    def auto_migrate_enabled(self) -> bool:
+        return (not self.is_production) if self.AUTO_MIGRATE is None else bool(self.AUTO_MIGRATE)
 
     @property
     def is_production(self) -> bool:

@@ -300,11 +300,11 @@ class SessionOrchestrator:
                 for it in items:
                     pool.append({
                         "id": it.id,
-                        "text": it.question_text,
+                        "text": it.text,
                         "topic": it.topic,
                         "subtopic": it.subtopic,
                         "difficulty": it.difficulty,
-                        "is_cv_based": bool(it.cv_item_reference),
+                        "is_cv_based": bool(it.cv_reference),
                         "time_limit": it.max_time_seconds,
                         "expected_keywords": it.expected_keywords or [],
                     })
