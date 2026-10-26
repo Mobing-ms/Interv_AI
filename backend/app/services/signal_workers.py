@@ -561,14 +561,23 @@ class ParallelSignalProcessor:
         self._tasks: List[asyncio.Task] = []
 
     def start_workers(self) -> None:
-        """Starts background worker tasks if not already active."""
-        if self._workers_running:
-            return
+        """Starts background worker tasks on the current event loop if not already active there."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-
+        if self._workers_running and getattr(self, "_loop", None) is loop:
+            return
+        if self._workers_running:
+            # Previous loop is gone (e.g. server restarted in-process): queues and
+            # tasks are bound to it, so rebuild them on this loop.
+            logger.info("Signal workers rebinding to a new event loop")
+            for t in self._tasks:
+                t.cancel()
+            self._video_queue = asyncio.Queue(maxsize=self._video_queue.maxsize)
+            self._audio_queue = asyncio.Queue(maxsize=self._audio_queue.maxsize)
+            self.store._lock = asyncio.Lock()
+        self._loop = loop
         self._workers_running = True
         self._tasks = [
             loop.create_task(self._video_worker_loop()),

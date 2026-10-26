@@ -127,7 +127,9 @@ def test_production_config_fails_closed():
             validate_settings(_prod(**bad))
 
 
-def test_dev_defaults_are_safe():
+def test_dev_defaults_are_safe(monkeypatch):
+    for key in ("DEBUG", "DEV_MODE", "JWT_SECRET_KEY", "ENV"):
+        monkeypatch.delenv(key, raising=False)
     s = Settings(_env_file=None)
     assert s.DEBUG is False and s.DEV_MODE is False
     validate_settings(s)
