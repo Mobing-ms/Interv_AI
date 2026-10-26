@@ -71,6 +71,7 @@ class LLMService:
         attempts = (self.max_retries if retries is None else retries) + 1
         last_exc: Optional[Exception] = None
         for attempt in range(attempts):
+            delay = 0.5 * (2 ** attempt)
             try:
                 return await asyncio.wait_for(
                     self._call_provider_once(system_prompt, user_prompt, session_id),
@@ -81,11 +82,19 @@ class LLMService:
                 code = e.response.status_code
                 if code != 429 and code < 500:
                     raise LLMError(f"LLM provider returned HTTP {code}") from e
+                if code == 429:
+                    # Rate limited: wait as long as the provider asks (capped), not the short default backoff.
+                    try:
+                        delay = max(delay, min(float(e.response.headers.get("retry-after", 2)), 15.0))
+                    except ValueError:
+                        delay = max(delay, 2.0)
             except (httpx.HTTPError, asyncio.TimeoutError) as e:
                 last_exc = e
             if attempt < attempts - 1:
-                logger.warning("[LLM] attempt %d/%d failed (%s); retrying", attempt + 1, attempts, type(last_exc).__name__)
-                await asyncio.sleep(0.5 * (2 ** attempt))
+                status = getattr(getattr(last_exc, "response", None), "status_code", None)
+                logger.warning("[LLM] attempt %d/%d failed (%s%s); retrying in %.1fs", attempt + 1, attempts,
+                               type(last_exc).__name__, f" HTTP {status}" if status else "", delay)
+                await asyncio.sleep(delay)
         raise LLMError(f"LLM provider unavailable after {attempts} attempts: {type(last_exc).__name__}") from last_exc
 
     async def _call_provider_once(self, system_prompt: str, user_prompt: str, session_id: Optional[int] = None) -> str:
@@ -110,7 +119,9 @@ class LLMService:
             return raw_text
 
         elif self.provider in ("openai", "azure", "groq", "ollama"):
-            base_url = self.base_url or "https://api.openai.com/v1"
+            base_url = self.base_url or (
+                "https://api.groq.com/openai/v1" if self.provider == "groq" else "https://api.openai.com/v1"
+            )
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",

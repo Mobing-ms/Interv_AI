@@ -17,6 +17,7 @@ Score Fusion, Comparison & Memory Update Engine (Phase 5.3).
 import math
 import hashlib
 import logging
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -573,8 +574,12 @@ def execute_u_memory_update(
             session_count=0,
             last_session_at=datetime.now(timezone.utc),
         )
-        db.add(mem)
-        db.flush()
+        try:
+            with db.begin_nested():
+                db.add(mem)
+        except IntegrityError:
+            # Another request created it concurrently.
+            mem = db.query(UserMemory).filter(UserMemory.user_id == user_id).one()
 
     current_topics = dict(mem.topic_scores or {})
     current_weak_list = list(mem.weak_topics or [])
@@ -747,6 +752,7 @@ def process_and_persist_session_result(
             db.commit()
             db.refresh(existing_result)
             res_record = existing_result
+            is_new_result = False
         else:
             res_record = SessionResult(
                 session_id=session_id,
@@ -768,10 +774,12 @@ def process_and_persist_session_result(
             db.add(res_record)
             db.commit()
             db.refresh(res_record)
+            is_new_result = True
 
-        # 5. U Memory Update (only for registered users with account)
+        # 5. U Memory Update (only for registered users with account), once per session:
+        # re-reading a result must not count the session again or re-append its questions.
         mem_update_info = {}
-        if user_id:
+        if user_id and is_new_result:
             mem_update_info = execute_u_memory_update(
                 user_id=user_id,
                 session_id=session_id,
