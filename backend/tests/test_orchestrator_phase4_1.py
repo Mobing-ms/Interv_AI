@@ -241,7 +241,7 @@ class TestSessionOrchestratorPhase4(unittest.TestCase):
             # Receive Main Question #1 (DSA)
             q1 = ws.receive_json()
             self.assertEqual(q1["type"], "question")
-            self.assertEqual(q1["topic"], "DSA")
+            self.assertNotIn(q1["topic"], ("Warmup", "Closing"))
             q1_id = q1["id"]
 
             _ = ws.receive_json()  # q1 avatar_speak
@@ -255,7 +255,7 @@ class TestSessionOrchestratorPhase4(unittest.TestCase):
         self.assertIsNotNone(state_in_redis)
         self.assertEqual(state_in_redis.state, SessionState.LISTENING)
         self.assertEqual(state_in_redis.current_question["id"], q1_id)
-        self.assertEqual(state_in_redis.topic, "DSA")
+        self.assertEqual(state_in_redis.topic, q1["topic"])
         self.assertEqual(len(state_in_redis.session_context), 1)  # Warmup recorded
         self.assertFalse(state_in_redis.is_connected)
 

@@ -92,6 +92,19 @@ the interview has started (they get `ack` with `ignored: true`).
 
 After `round_end` the server closes with code **1000**.
 
+## Closing
+
+When the questions are done the server sends a `question` with `topic: "Closing"`
+(id 999, "do you have any questions for me?") plus its `avatar_speak`, and **waits**.
+Reply with `answer_ended` (or `client_query`) carrying the candidate's question, or empty /
+"no" text to skip. The server answers with `avatar_speak`, then sends `round_end`. With no reply
+within 90 s it ends on its own. Before this change `round_end` followed the closing line immediately.
+
+## Follow-ups
+
+`question` frames with `is_follow_up: true` build on the previous answer. Vague answers always get
+one; partial and strong answers only sometimes. A vague answer to a follow-up moves on.
+
 ## Reconnect
 
 Reconnect to the same URL with the same credential. The server restores the

@@ -66,3 +66,11 @@ def _reset():
     sessions_dir = os.path.join(settings.DATA_DIR, "storage", "sessions")
     shutil.rmtree(sessions_dir, ignore_errors=True)
     os.makedirs(sessions_dir, exist_ok=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_random_follow_ups(monkeypatch):
+    """Optional follow-ups on OK/STRONG answers are random; keep routing deterministic in tests."""
+    from app.services import router_service
+    monkeypatch.setattr(router_service, "OK_FOLLOW_UP_RATE", 0.0)
+    monkeypatch.setattr(router_service, "STRONG_FOLLOW_UP_RATE", 0.0)

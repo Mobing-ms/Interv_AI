@@ -221,7 +221,9 @@ class TestEvaluatorAndRouterPhase4(unittest.TestCase):
         self.assertTrue(fu_q["is_follow_up"])
         self.assertEqual(fu_q["topic"], "DSA")
         self.assertEqual(fu_q["parent_question_id"], 5)
-        self.assertTrue("shrinkage" in fu_q["text"].lower() or "mechanism" in fu_q["text"].lower())
+        # The deterministic fallback stays neutral and never echoes the evaluator's note.
+        self.assertNotIn("Explain window shrinkage", fu_q["text"])
+        self.assertTrue(fu_q["text"].endswith("?") or fu_q["text"].endswith("."))
 
     # =========================================================================
     # 5. ROUTER PURE FUNCTION: STRICTLY MAX 2 FOLLOW-UPS PER TOPIC
@@ -305,19 +307,16 @@ class TestEvaluatorAndRouterPhase4(unittest.TestCase):
 
     def test_closing_inquiry_handling(self):
         """Closing handles candidate questions about tech stack, culture, or wrap-up."""
-        # Candidate asks about tech stack
+        # A real question gets a neutral acknowledgement, never made-up company facts
         ans_stack = handle_closing_inquiry("What tech stack do you use?")
-        self.assertIn("FastAPI", ans_stack["text"])
-        self.assertIn("TypeScript", ans_stack["text"])
+        self.assertIn("good question", ans_stack["text"].lower())
+        self.assertNotIn("FastAPI", ans_stack["text"])
         self.assertTrue(ans_stack["is_closing_complete"])
-
-        # Candidate asks about culture
-        ans_culture = handle_closing_inquiry("Can you tell me about the engineering culture?")
-        self.assertIn("collaborative", ans_culture["text"].lower())
 
         # Candidate has no questions
         ans_none = handle_closing_inquiry("No, that's all. Thank you!")
         self.assertIn("thank you", ans_none["text"].lower())
+        self.assertNotIn("good question", ans_none["text"].lower())
 
     # =========================================================================
     # 9. INTEGRATION: FULL WEBSOCKET EVALUATION & ROUTING LOOP

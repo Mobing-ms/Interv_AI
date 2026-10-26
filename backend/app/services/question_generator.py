@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 import math
 import re
@@ -14,6 +15,8 @@ from app.schemas import (
     QuestionBankItemOut,
 )
 from app.services.llm import llm_service
+
+logger = logging.getLogger("intervai.question_generator")
 from app.services.question_dedupe import (
     deduplicate_questions,
     compute_question_hash,
@@ -866,40 +869,63 @@ def _generate_fallback_questions(
 
         # Generic Fallback for unhandled topic names
         else:
-            add_candidate({
-                "text": f"In the context of {t_name}, what core design patterns and architectural trade-offs do you consider essential for {target_role}?",
-                "topic": t_name,
-                "subtopic": "Fundamentals",
-                "difficulty": "Medium",
-                "question_type": "conceptual",
-                "expected_keywords": ["design patterns", "trade-offs", "scalability", "architecture"],
-                "ideal_answer_points": [
-                    f"Core principles within {t_name}.",
-                    "Application to real production scenarios.",
-                ],
-                "max_time_seconds": time_limit,
-                "cv_reference": None,
-                "is_weak_area": is_weak,
-            })
-            add_candidate({
-                "text": f"Walk me through a practical scenario where you applied principles of {t_name} to resolve a difficult problem.",
-                "topic": t_name,
-                "subtopic": "Practical Application",
-                "difficulty": "Hard" if blueprint.difficulty in ("Hard", "Adaptive") else "Medium",
-                "question_type": "scenario",
-                "expected_keywords": ["problem solving", "root cause", "resolution", "impact"],
-                "ideal_answer_points": [
-                    "Problem identification and constraints.",
-                    "Execution methodology and results.",
-                ],
-                "max_time_seconds": time_limit,
-                "cv_reference": None,
-                "is_weak_area": is_weak,
-            })
+            # A topic the candidate chose: several distinct angles, plus the topic seen
+            # through each CV project.
+            angles = [
+                ("Fundamentals", "conceptual", "Medium",
+                 f"What are the core ideas in {t_name} that you rely on most as a {target_role}, and why?"),
+                ("Trade-offs", "conceptual", "Medium",
+                 f"Describe a trade-off you have had to make in {t_name}. What were the options and how did you decide?"),
+                ("Practical Application", "scenario", "Hard" if blueprint.difficulty in ("Hard", "Adaptive") else "Medium",
+                 f"Walk me through a difficult problem you solved using {t_name}. What was the root cause and what did you change?"),
+                ("Failure Modes", "scenario", "Hard",
+                 f"What typically goes wrong with {t_name} in production, and how would you detect and recover from it?"),
+                ("Design", "scenario", "Medium",
+                 f"If you were designing a new service today, how would {t_name} shape your design, and what would you measure?"),
+            ]
+            for subtopic, q_type, diff, text in angles:
+                add_candidate({
+                    "text": text,
+                    "topic": t_name,
+                    "subtopic": subtopic,
+                    "difficulty": diff,
+                    "question_type": q_type,
+                    "expected_keywords": ["trade-offs", "root cause", "monitoring", "design"],
+                    "ideal_answer_points": [
+                        f"Accurate explanation of {t_name} concepts.",
+                        "A concrete example from real work.",
+                        "Trade-offs and how the outcome was measured.",
+                    ],
+                    "max_time_seconds": time_limit,
+                    "cv_reference": None,
+                    "is_weak_area": is_weak,
+                })
+            for proj in projects_list[:3]:
+                p_title = _extract_dict_or_attr(proj, "title", "")
+                if not p_title:
+                    continue
+                add_candidate({
+                    "text": f"How did {t_name} come into play in {p_title}? Walk me through one decision you made there and what you would change now.",
+                    "topic": t_name,
+                    "subtopic": f"{p_title} through {t_name}",
+                    "difficulty": blueprint.difficulty if blueprint.difficulty != "Adaptive" else "Medium",
+                    "question_type": "project-based",
+                    "expected_keywords": (_extract_dict_or_attr(proj, "tech_stack", []) or [])[:3] + ["trade-offs"],
+                    "ideal_answer_points": [
+                        f"Specific role of {t_name} in {p_title}.",
+                        "The decision, its alternatives and the reasoning.",
+                        "Honest reflection on what to improve.",
+                    ],
+                    "max_time_seconds": time_limit,
+                    "cv_reference": f"Project: {p_title}",
+                    "is_weak_area": is_weak,
+                })
 
     # Supplement if pool has not reached total_needed (2-3x multiplier)
     tool_idx = 0
-    while len(candidates) < total_needed:
+    attempts = 0
+    while len(candidates) < total_needed and attempts < total_needed * 3:
+        attempts += 1
         selected_topic = topics_list[len(candidates) % len(topics_list)]
         t_name = selected_topic.name
         is_weak = selected_topic.is_weak_area
@@ -1049,35 +1075,54 @@ async def generate_question_pool_async(
 
     # Attempt LLM if provider is active
     if llm_service.is_active():
+        projects = _extract_dict_or_attr(profile, "projects", []) or []
+        experience = _extract_dict_or_attr(profile, "experience", []) or []
+        project_lines = "\n".join(
+            f"  - {_extract_dict_or_attr(p, 'title', '')}: {_extract_dict_or_attr(p, 'description', '') or ''} "
+            f"(stack: {', '.join(_extract_dict_or_attr(p, 'tech_stack', []) or []) or 'n/a'}; "
+            f"outcomes: {_extract_dict_or_attr(p, 'outcomes', '') or 'n/a'})"
+            for p in projects[:6]
+        ) or "  (none)"
+        experience_lines = "\n".join(
+            f"  - {_extract_dict_or_attr(e, 'role', '')} at {_extract_dict_or_attr(e, 'company', '')}: "
+            f"{'; '.join((_extract_dict_or_attr(e, 'responsibilities', []) or [])[:4])}"
+            for e in experience[:4]
+        ) or "  (none)"
+        has_cv = bool(projects or experience)
+        topic_names = [t.name for t in (blueprint.topics or [])]
         prompt = f"""
-You are the AI Interview Engine for IntervAI.
-Generate a pool of {total_needed} high-signal mock interview questions for this candidate.
+You are a senior interviewer preparing a {blueprint.round_type} interview for a {_extract_dict_or_attr(target_profile, 'target_role', 'Software Engineer')} candidate.
+Write a pool of {total_needed} questions.
 
-Interview Blueprint:
-- Round Type: {blueprint.round_type}
-- Difficulty: {blueprint.difficulty}
-- Mode: {blueprint.mode} (Answer limit: {blueprint.time_per_question_seconds}s)
-- Blueprint Topics & Weights: {[t.model_dump() for t in (blueprint.topics or [])]}
+Interview:
+- Round type: {blueprint.round_type}; difficulty: {blueprint.difficulty}; answer time: {blueprint.time_per_question_seconds}s per question
+- Topics and weights: {[t.model_dump() for t in (blueprint.topics or [])]}
 
-Candidate Context:
-- Target Role: {_extract_dict_or_attr(target_profile, 'target_role', 'Software Engineer')}
-- Skills from CV: {_extract_dict_or_attr(profile, 'skills', {})}
-- Projects from CV: {[p.get('title') for p in (_extract_dict_or_attr(profile, 'projects', []) or [])]}
-- Identified Weak Areas: {_extract_dict_or_attr(user_context, 'weak_areas', [])}
+Candidate CV:
+- Skills: {_extract_dict_or_attr(profile, 'skills', {})}
+- Projects:
+{project_lines}
+- Experience:
+{experience_lines}
+- Known weak areas from past sessions: {_extract_dict_or_attr(user_context, 'weak_areas', [])}
 
-Strict Instructions:
-1. Questions must cover every blueprint topic in the specified proportions.
-2. Project and skill questions must refer strictly to items present in the candidate's CV.
-3. Every question must include:
+Rules:
+1. Every question's topic must be exactly one of: {topic_names}.
+2. {"About 40% of the questions must be about the candidate's own projects or experience listed above, asked through the lens of a topic (e.g. how they designed, scaled, debugged or would change something they built). Name the project. The other 60% test the topics directly, using the candidate's stack where it fits." if has_cv else "The candidate has no CV on file: ask topic questions only."}
+3. Never invent projects, employers or technologies that are not in the CV.
+4. One clear question per item, one or two sentences, phrased the way a professional interviewer would say it out loud. No preamble, no praise, no numbering.
+5. Vary the angle: design, trade-offs, debugging, a past decision, a concrete scenario.
+
+Return JSON {{"questions": [...]}} where each item has:
    - text
-   - topic (must match one of the blueprint topics)
+   - topic (one of the topics above)
    - subtopic
-   - difficulty (Easy, Medium, Hard, Adaptive)
+   - difficulty (Easy, Medium, Hard)
    - question_type (conceptual, coding-explanation, scenario, behavioral, project-based)
-   - expected_keywords (list of technical terms required for high evaluation)
-   - ideal_answer_points (key elements expected in a model response)
+   - expected_keywords (technical terms a strong answer would use)
+   - ideal_answer_points (key elements of a model answer)
    - max_time_seconds ({blueprint.time_per_question_seconds})
-   - cv_reference (e.g. 'Project: XYZ' or 'Skill: Go', or null if conceptual)
+   - cv_reference ("Project: <title>" or "Experience: <company>" when the question is about the CV, otherwise null)
 """
         try:
             llm_result = await llm_service.generate_structured_async(
@@ -1087,7 +1132,8 @@ Strict Instructions:
             )
             if llm_result and llm_result.questions:
                 raw_candidates = [q.model_dump() for q in llm_result.questions]
-        except Exception:
+        except Exception as e:
+            logger.warning("LLM question pool generation failed (%s); using template questions", type(e).__name__)
             raw_candidates = []
 
     # Fallback to rich deterministic generator if LLM returned insufficient candidates
@@ -1122,6 +1168,9 @@ Strict Instructions:
 
     # 4. Partition into Active Question Pool and Reserve Follow-Up Pool
     needed_active = blueprint.total_question_count
+    if len(ranked_questions) <= needed_active:
+        # Short pool: still hold back ~20% as reserve so follow-ups and retakes have material.
+        needed_active = max(1, len(ranked_questions) - max(1, len(ranked_questions) // 5))
     active_questions = ranked_questions[:needed_active]
     reserve_pool = ranked_questions[needed_active:]
 

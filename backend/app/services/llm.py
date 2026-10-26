@@ -135,6 +135,10 @@ class LLMService:
                 "response_format": {"type": "json_object"},
                 "temperature": 0.0,
             }
+            if self.provider == "groq" and self.model.startswith("openai/gpt-oss"):
+                # Long hidden reasoning makes these models hit rate limits and sometimes return
+                # empty JSON (json_validate_failed); interview prompts don't need it.
+                payload["reasoning_effort"] = "low"
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 res = await client.post(f"{base_url.rstrip('/')}/chat/completions", headers=headers, json=payload)
                 res.raise_for_status()

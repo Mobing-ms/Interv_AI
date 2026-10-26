@@ -772,9 +772,15 @@ def process_and_persist_session_result(
                 strengths=strengths,
             )
             db.add(res_record)
-            db.commit()
+            try:
+                db.commit()
+                is_new_result = True
+            except IntegrityError:
+                # Another run persisted this session's result first; it also did the memory update.
+                db.rollback()
+                res_record = db.query(SessionResult).filter(SessionResult.session_id == session_id).one()
+                is_new_result = False
             db.refresh(res_record)
-            is_new_result = True
 
         # 5. U Memory Update (only for registered users with account), once per session:
         # re-reading a result must not count the session again or re-append its questions.

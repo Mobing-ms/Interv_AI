@@ -8,39 +8,58 @@ Pure router decision logic directing interview flow based on candidate answer ev
 - Round done -> Check time up, question target, or topic coverage, and transition to closing.
 """
 
+import re
 import time
+import random
 import logging
 from typing import Dict, Any, List, Optional
 from app.services.session_state import SessionStateData
 from app.services.orchestrator_modules import RouterModuleProtocol
+from pydantic import BaseModel, Field
 from app.prompts.evaluation_rubric import PROBING_FOLLOW_UP_PROMPT_TEMPLATE
+from app.services.llm import llm_service
 
 logger = logging.getLogger("intervai.router")
 
 MAX_FOLLOWUPS_PER_TOPIC = 2
+# Not every answer gets a follow-up: vague answers always do (up to the cap); otherwise
+# a partial answer is probed half the time and a strong one is pushed deeper about a third of the time.
+OK_FOLLOW_UP_RATE = 0.5
+SHORT_ANSWER_WORDS = 20
+SHORT_ANSWER_PROBES = [
+    "Let's take it one step at a time. What is the very first thing you would look at or do, and why?",
+    "That's fine. If you had to start somewhere, which part of the problem would you tackle first?",
+    "Let's make it concrete. Can you think of a situation, even a small one, where you dealt with something similar?",
+]
+STRONG_FOLLOW_UP_RATE = 0.35
 
 
 # =============================================================================
 # 1. HELPER CHECKERS (PURE FUNCTIONS)
 # =============================================================================
 
+def _distinct_main(session_context: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Main questions (no warm-up, closing or follow-ups), once each: a repeated question counts once."""
+    seen, out = set(), []
+    for c in session_context:
+        if c.get("topic") in ("Warmup", "Closing") or c.get("is_follow_up", False):
+            continue
+        key = c.get("question_id") if c.get("question_id") is not None else c.get("question")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+
 def count_topic_main_questions(session_context: List[Dict[str, Any]], topic: str) -> int:
     """Counts main questions asked for a given topic (excluding follow-ups and warmup)."""
-    return len([
-        c for c in session_context
-        if c.get("topic") == topic
-        and not c.get("is_follow_up", False)
-        and c.get("topic") != "Warmup"
-    ])
+    return len([c for c in _distinct_main(session_context) if c.get("topic") == topic])
 
 
 def count_all_main_questions(session_context: List[Dict[str, Any]]) -> int:
     """Counts total main domain questions asked across all topics."""
-    return len([
-        c for c in session_context
-        if c.get("topic") not in ("Warmup", "Closing")
-        and not c.get("is_follow_up", False)
-    ])
+    return len(_distinct_main(session_context))
 
 
 def is_topic_done(
@@ -127,15 +146,17 @@ def generate_probing_follow_up(
     subtopic = question.get("subtopic", topic)
     q_id = int(time.time() * 1000) % 1000000
 
-    # Deterministic contextual follow-up templates by topic & gap
-    if "metrics" in gap.lower() or "result" in gap.lower():
-        text = f"Could you dive deeper into the measurable results and specific metrics that came out of your actions in {subtopic}?"
-    elif "edge case" in gap.lower() or "bottleneck" in gap.lower():
-        text = f"Building on your thoughts regarding {subtopic}: What specific edge cases or bottlenecks would occur if traffic or load spiked 10x suddenly?"
-    elif "trade-off" in gap.lower() or "complexity" in gap.lower():
-        text = f"You touched on {subtopic}. What are the primary time/space complexity trade-offs with that approach, and how would you optimize it further?"
+    # Deterministic fallback, used when the LLM is unavailable: neutral and tied to the gap.
+    gap_l = gap.lower()
+    if "metric" in gap_l or "result" in gap_l or "impact" in gap_l:
+        text = "What was the measurable outcome of that, and how did you know it worked?"
+    elif "trade-off" in gap_l or "tradeoff" in gap_l or "complexity" in gap_l:
+        text = "What alternatives did you consider there, and why did you choose this approach over them?"
+    elif "example" in gap_l or "specific" in gap_l or "vague" in gap_l:
+        text = "Can you walk me through a specific example of that, step by step?"
     else:
-        text = f"Could you elaborate on the underlying mechanism for {subtopic}, specifically regarding {gap}?"
+        # Never echo `gap`: it is the evaluator's note to the interviewer, not candidate-facing text.
+        text = "Can you make that more concrete? Walk me through a specific example from your own work."
 
     return {
         "id": q_id,
@@ -148,6 +169,69 @@ def generate_probing_follow_up(
         "parent_question_id": question.get("id"),
         "expected_keywords": evaluation.get("keyword_coverage", {}).get("missing", ["trade-offs", "scaling"]),
     }
+
+
+class FollowUpPayload(BaseModel):
+    text: str
+    expected_keywords: List[str] = Field(default_factory=list)
+
+
+async def generate_follow_up_async(
+    question: Dict[str, Any],
+    evaluation: Dict[str, Any],
+    topic: str,
+    reason: str = "probe_gap",
+    session_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Writes a follow-up that builds on what the candidate actually said.
+    reason: "probe_gap" (answer was vague or partial) or "go_deeper" (answer was strong).
+    Falls back to generate_probing_follow_up when the LLM is unavailable or returns nothing usable.
+    """
+    fallback = generate_probing_follow_up(question, evaluation, topic)
+    answer = (evaluation.get("answer") or "").strip()
+    if len(answer.split()) < SHORT_ANSWER_WORDS:
+        # Nothing substantial to build on; an LLM here tends to invent things the candidate
+        # "mentioned". Ask for a first concrete step instead.
+        fallback["text"] = SHORT_ANSWER_PROBES[len(answer) % len(SHORT_ANSWER_PROBES)]
+        return fallback
+    if not llm_service.is_active():
+        return fallback
+
+    gap = evaluation.get("follow_up_gap") or "the reasoning behind the approach"
+    aim = (
+        f"The answer was incomplete. Probe this gap: {gap}."
+        if reason == "probe_gap"
+        else "The answer was solid. Push one level deeper on the most interesting thing they said: "
+             "a failure mode, a scaling limit, a trade-off or what they would do differently."
+    )
+    prompt = f"""You are a senior interviewer in a live {topic} interview.
+
+Your previous question: {question.get('text', '')}
+Candidate's answer: {answer[:1500]}
+
+{aim}
+
+Write ONE follow-up question that refers to something specific the candidate said (quote or name it).
+One or two sentences, professional and neutral, as you would say it out loud. No praise, no preamble
+("Great answer", "Thanks for sharing"), no new unrelated topic. Do not list the points a good answer
+should cover; that gives the answer away. If the candidate said little, ask them to start from one
+concrete step or example.
+
+Return JSON {{"text": "...", "expected_keywords": ["...", "..."]}}"""
+    try:
+        res = await llm_service.generate_structured_async(prompt=prompt, response_schema=FollowUpPayload)
+    except Exception as e:
+        logger.warning("Follow-up generation failed (%s); using fallback", type(e).__name__)
+        return fallback
+    text = (res.text if res else "").strip()
+    if len(text) < 15 or len(text) > 400:
+        return fallback
+    fallback["text"] = text
+    if res.expected_keywords:
+        fallback["expected_keywords"] = res.expected_keywords[:8]
+    fallback["subtopic"] = f"{question.get('subtopic') or topic} Follow-Up"
+    return fallback
 
 
 # =============================================================================
@@ -211,6 +295,15 @@ def decide_route(
 
     classification = str(last_eval.get("classification", "OK")).upper()
 
+    # A short non-answer ("I'm not sure", "someone else did it") is weak, not off-topic:
+    # probe it instead of asking the candidate to "refocus".
+    if classification == "OFF_TOPIC":
+        words = last_eval.get("word_count")
+        if words is None and last_eval.get("answer"):
+            words = len(str(last_eval["answer"]).split())
+        if words is not None and words < SHORT_ANSWER_WORDS:
+            classification = "WEAK_VAGUE"
+
     # 3. OFF_TOPIC -> Redirect politely and repeat question once
     if classification == "OFF_TOPIC":
         repeat_count = state.question_repeat_count.get(q_id_str, 0)
@@ -222,7 +315,7 @@ def decide_route(
                 "difficulty_adjustment": "maintain",
                 "repeat_question": True,
                 "redirect_message": (
-                    f"Let's refocus on the question asked: {curr_q.get('text', 'Please address the prompt directly.')}"
+                    f"Let's refocus on the question I asked: {curr_q.get('text', '')}"
                 ),
                 "follow_up_gap": last_eval.get("follow_up_gap"),
                 "round_done": False,
@@ -235,11 +328,15 @@ def decide_route(
     # 4. WEAK_VAGUE -> Probing follow-up on the same topic (strictly max 2 per topic)
     if classification == "WEAK_VAGUE":
         current_fu = state.follow_up_count_per_topic.get(topic, 0)
+        # A follow-up that still got a vague answer: move on rather than press again.
+        if curr_q.get("is_follow_up"):
+            current_fu = MAX_FOLLOWUPS_PER_TOPIC
         if current_fu < MAX_FOLLOWUPS_PER_TOPIC:
             return {
                 "action": "follow_up",
                 "reason": f"probing_follow_up_{current_fu + 1}",
                 "topic": topic,
+                "follow_up_reason": "probe_gap",
                 "difficulty_adjustment": "maintain",
                 "repeat_question": False,
                 "redirect_message": None,
@@ -249,6 +346,26 @@ def decide_route(
         else:
             logger.info("Topic %s reached max follow-ups (%d); advancing topic.", topic, MAX_FOLLOWUPS_PER_TOPIC)
             # Advance to next topic or check if topic is done
+
+    # 5. Optional follow-up on a satisfactory or strong main answer (never chained off a follow-up)
+    if (
+        classification in ("OK", "STRONG")
+        and not curr_q.get("is_follow_up")
+        and state.follow_up_count_per_topic.get(topic, 0) == 0
+    ):
+        rate = STRONG_FOLLOW_UP_RATE if classification == "STRONG" else OK_FOLLOW_UP_RATE
+        if random.random() < rate:
+            return {
+                "action": "follow_up",
+                "reason": "strong_go_deeper" if classification == "STRONG" else "partial_probe",
+                "follow_up_reason": "go_deeper" if classification == "STRONG" else "probe_gap",
+                "topic": topic,
+                "difficulty_adjustment": "maintain",
+                "repeat_question": False,
+                "redirect_message": None,
+                "follow_up_gap": last_eval.get("follow_up_gap"),
+                "round_done": False,
+            }
 
     # 5. STRONG -> Raise difficulty or go deeper in the same topic
     if classification == "STRONG":
@@ -312,28 +429,17 @@ def handle_closing_inquiry(candidate_query: str) -> Dict[str, str]:
     Returns an informative answer plus thank-you.
     """
     query_norm = candidate_query.strip().lower()
-
-    if not query_norm or any(p in query_norm for p in ["no", "none", "all good", "nothing", "i'm good", "nope"]):
-        response = (
-            "Thank you so much for your time and thoughtful responses today! "
-            "We enjoyed walking through your experience. Our team will review your session and be in touch soon with next steps."
-        )
-    elif "culture" in query_norm or "team" in query_norm:
-        response = (
-            "Great question! Our engineering culture is highly collaborative, emphasizing ownership, continuous learning, "
-            "and transparent architectural discussions. We value curiosity and practical impact. "
-            "Thank you again for interviewing with us today, and best of luck!"
-        )
-    elif "stack" in query_norm or "tech" in query_norm:
-        response = (
-            "We build modern distributed microservices utilizing FastAPI, TypeScript, React, and Redis, focusing heavily "
-            "on low latency and resilient real-time streaming architectures. "
-            "Thank you for asking, and thank you again for your time today!"
-        )
+    no_questions = not query_norm or (
+        "?" not in query_norm
+        and any(re.search(rf"\b{p}\b", query_norm) for p in ["no", "none", "nothing", "all good", "i'm good", "nope", "that's all"])
+    )
+    if no_questions:
+        response = "Thank you for your time today. That's the end of the interview, and your report will be ready shortly."
     else:
         response = (
-            f"Thank you for asking about that! We prioritize open communication and impactful engineering excellence. "
-            "Thank you again for walking through your experience today. We will be in touch with next steps soon!"
+            "That's a good question to ask, and in a real interview it shows genuine interest in the role. "
+            "The interviewer's answer will depend on the company, so note it down for the real thing. "
+            "Thank you for your time today. Your report will be ready shortly."
         )
 
     return {

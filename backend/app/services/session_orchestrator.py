@@ -31,9 +31,10 @@ from app.services.orchestrator_modules import (
 from app.services.evaluator_service import LLMAnswerEvaluator
 from app.services.router_service import (
     RouterService,
-    generate_probing_follow_up,
+    generate_follow_up_async,
     handle_closing_inquiry,
 )
+from app.services.question_pool_store import ensure_question_pool
 from app.services.signal_workers import (
     ParallelSignalProcessor,
     default_signal_processor,
@@ -123,6 +124,9 @@ class SessionOrchestrator:
         self._last_persist_time: float = 0.0
         self._send_lock = asyncio.Lock()
         self._keepalive_task: Optional[asyncio.Task] = None
+        self._pool_task: Optional[asyncio.Task] = None
+        self._pool_cache: Optional[List[Dict[str, Any]]] = None
+        self._closing_timeout_task: Optional[asyncio.Task] = None
 
     # =========================================================================
     # 1. STATE INITIALIZATION & RESUMPTION
@@ -287,29 +291,8 @@ class SessionOrchestrator:
             self.state.pending_followup = None
             return fu
 
-        # 2. Query QuestionBankItem from DB if exists
-        pool: List[Dict[str, Any]] = []
-        db = SessionLocal()
-        try:
-            if self.state.interview_id:
-                items = (
-                    db.query(QuestionBankItem)
-                    .filter(QuestionBankItem.interview_id == self.state.interview_id)
-                    .all()
-                )
-                for it in items:
-                    pool.append({
-                        "id": it.id,
-                        "text": it.text,
-                        "topic": it.topic,
-                        "subtopic": it.subtopic,
-                        "difficulty": it.difficulty,
-                        "is_cv_based": bool(it.cv_reference),
-                        "time_limit": it.max_time_seconds,
-                        "expected_keywords": it.expected_keywords or [],
-                    })
-        finally:
-            db.close()
+        # 2. The interview's generated pool (active questions first, reserve after)
+        pool = [dict(q) for q in self._load_pool()]
 
         # 3. Fallback to default pool if database has none
         if not pool:
@@ -318,6 +301,7 @@ class SessionOrchestrator:
                 if self.state.mode == "pressure"
                 else settings.ORCHESTRATOR_QUESTION_TIME_SECONDS
             )
+            self._configure_router()
             pool = [
                 {
                     "id": 101,
@@ -371,15 +355,11 @@ class SessionOrchestrator:
                 },
             ]
 
-        # 4. Blueprint topics
-        bp = {
-            "topics": [
-                {"name": "DSA", "weight": 0.4},
-                {"name": "System Design", "weight": 0.3},
-                {"name": "Core CS", "weight": 0.3},
-            ],
-            "difficulty_curve": [self.state.difficulty, self.state.difficulty, "Hard"],
-        }
+        # 4. Every topic in the pool gets an equal share; the selector balances topics and
+        # alternates CV and topic questions. The generator's active/reserve split ranks CV
+        # questions high, so choosing only from "active" would skew towards projects.
+        topics = list(dict.fromkeys(q.get("topic", "General") for q in pool))
+        bp = {"topics": [{"name": t, "weight": 1.0} for t in topics]}
 
         # 5. Call pure testable question selector function
         selected = select_next_question(
@@ -401,6 +381,64 @@ class SessionOrchestrator:
     # =========================================================================
 
     PERSIST_MIN_INTERVAL_SECONDS = 2.0
+
+    def _load_pool(self) -> List[Dict[str, Any]]:
+        """The interview's QuestionBank items, read once per orchestrator."""
+        if self._pool_cache is not None:
+            return self._pool_cache
+        pool: List[Dict[str, Any]] = []
+        if self.state and self.state.interview_id:
+            db = SessionLocal()
+            try:
+                items = (
+                    db.query(QuestionBankItem)
+                    .filter(QuestionBankItem.interview_id == self.state.interview_id)
+                    .order_by(QuestionBankItem.is_reserve_followup, QuestionBankItem.rank_score.desc())
+                    .all()
+                )
+                for it in items:
+                    pool.append({
+                        "id": it.id,
+                        "text": it.text,
+                        "topic": it.topic,
+                        "subtopic": it.subtopic,
+                        "difficulty": it.difficulty,
+                        "is_cv_based": bool(it.cv_reference),
+                        "cv_reference": it.cv_reference,
+                        "is_reserve": bool(it.is_reserve_followup),
+                        "time_limit": it.max_time_seconds,
+                        "expected_keywords": it.expected_keywords or [],
+                    })
+            finally:
+                db.close()
+        if pool:
+            self._pool_cache = pool
+        self._configure_router()
+        return pool
+
+    def _configure_router(self) -> None:
+        """Tell the router how many main questions this interview's duration allows."""
+        if not self.state:
+            return
+        # Same sizing as the blueprint: duration minus ~2 min for warm-up and closing, 2 min per question
+        # (1 min in pressure mode).
+        per_question = 60 if self.state.mode == "pressure" else 120
+        main_question_target = max(3, (self.state.duration_minutes * 60 - 120) // per_question)
+        if isinstance(self.router, RouterService) and self.router.blueprint is None:
+            self.router.blueprint = {"total_questions": main_question_target}
+            if self.state:
+                self.state.total_questions_target = main_question_target
+
+    async def _ensure_pool_ready(self) -> None:
+        """Waits for pool generation started at greeting (bounded so the interview never stalls)."""
+        if self._pool_task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(self._pool_task), timeout=45)
+        except Exception as e:
+            logger.warning("Question pool generation for session #%d did not finish (%s); using fallback questions",
+                           self.session_id, type(e).__name__)
+        self._pool_task = None
 
     def _persist(self) -> None:
         """Saves current in-memory state to the state store (used on transitions)."""
@@ -459,9 +497,14 @@ class SessionOrchestrator:
                 candidate_name = self.state.user_name or "Candidate"
                 target_role = self.state.target_role or "Software Engineer"
                 greeting_text = (
-                    f"Hello {candidate_name}! Welcome to your {target_role} interview with IntervAI. "
-                    "I will be your interviewer today. I'm excited to learn more about your technical background and experience."
+                    f"Hello {candidate_name}, welcome. I'm Ava, and I'll be interviewing you today for the {target_role} role. "
+                    "We'll start with a short introduction, then move on to questions about your experience and the topics for this round. "
+                    "Take your time with each answer."
                 )
+                if self.state.interview_id and self._pool_task is None:
+                    self._pool_task = asyncio.create_task(
+                        ensure_question_pool(self.state.interview_id, self.user_id)
+                    )
                 self.transition_to(SessionState.WARMUP)
                 await self.emit_avatar_speak(greeting_text)
                 # Brief pause so the candidate hears the greeting before warmup question kicks in
@@ -552,6 +595,7 @@ class SessionOrchestrator:
                     "topic": curr_q.get("topic"),
                     "subtopic": curr_q.get("subtopic"),
                     "is_follow_up": curr_q.get("is_follow_up", False),
+                    "is_cv_based": bool(curr_q.get("is_cv_based")),
                     "answer": ans_text,
                     "relevance": eval_res.get("relevance"),
                     "correctness": eval_res.get("correctness"),
@@ -625,15 +669,13 @@ class SessionOrchestrator:
 
                 # 2. Follow-up probing for WEAK_VAGUE (strictly max 2 per topic)
                 if action == "follow_up":
-                    fu_q = None
-                    if hasattr(self.question_selector, "get_follow_up"):
-                        fu_q = self.question_selector.get_follow_up(self.state, last_eval)
-                    if not fu_q:
-                        fu_q = generate_probing_follow_up(
-                            self.state.current_question or {},
-                            last_eval,
-                            route.get("topic") or self.state.topic or "General",
-                        )
+                    fu_q = await generate_follow_up_async(
+                        self.state.current_question or {},
+                        last_eval,
+                        route.get("topic") or self.state.topic or "General",
+                        reason=route.get("follow_up_reason", "probe_gap"),
+                        session_id=self.session_id,
+                    )
 
                     if fu_q:
                         self.state.current_question = fu_q
@@ -645,7 +687,9 @@ class SessionOrchestrator:
 
                 # 3. Next question / next topic / deepen topic
                 if action in ("next_question", "deepen_topic", "next_topic"):
-                    nxt_q = self.question_selector.get_next_question(self.state)
+                    await self._ensure_pool_ready()
+                    self.state.pending_followup = None
+                    nxt_q = self._select_next_question()
                     if nxt_q:
                         self.state.current_question = nxt_q
                         self.state.pending_followup = None
@@ -666,31 +710,23 @@ class SessionOrchestrator:
             # STATE: CLOSING
             # -----------------------------------------------------------------
             elif curr_state == SessionState.CLOSING:
-                closing_q = self.question_selector.get_closing(self.state)
-                closing_text = closing_q.get("text", "")
-                if "questions for us" not in closing_text.lower():
-                    closing_text = (
-                        "That concludes all of our interview questions for today! "
-                        "Do you have any questions for us about the role, our engineering team, or our tech stack? "
-                        "Thank you very much for your time and for sharing your experience with us."
-                    )
-                await self.emit_avatar_speak(closing_text)
-
-                # Compile final summary
-                scores = [c["score"] for c in self.state.session_context if c.get("score") is not None]
-                avg_score = round(sum(scores) / len(scores), 1) if scores else None
-                topics_covered = list(set([c.get("topic") for c in self.state.session_context if c.get("topic")]))
-
-                summary = {
-                    "total_questions": len(self.state.session_context),
-                    "average_score": avg_score,
-                    "topics_covered": topics_covered,
-                    "elapsed_time_seconds": round(self.state.elapsed_time, 1),
+                # Ask for the candidate's questions and wait for a reply (answer_ended /
+                # client_query) before ending; _finish_round runs on the reply or on timeout.
+                closing_q = {
+                    "id": 999,
+                    "text": "That's the end of my questions. Before we finish, do you have any questions for me?",
+                    "topic": "Closing",
+                    "subtopic": "Candidate questions",
+                    "difficulty": "Easy",
+                    "time_limit": self.CLOSING_REPLY_TIMEOUT_SECONDS,
+                    "is_follow_up": False,
                 }
-
-                await self.emit_round_end(summary)
-                self.transition_to(SessionState.ENDED)
-                await self.run_state_action()
+                self.state.current_question = closing_q
+                self._persist()
+                await self.emit_question(closing_q)
+                await self.emit_avatar_speak(closing_q["text"])
+                if self._closing_timeout_task is None:
+                    self._closing_timeout_task = asyncio.create_task(self._closing_timeout())
 
             # -----------------------------------------------------------------
             # STATE: ENDED
@@ -752,6 +788,32 @@ class SessionOrchestrator:
             await self.emit_avatar_speak(nudge_info["nudge_text"])
             return nudge_info
         return None
+
+    CLOSING_REPLY_TIMEOUT_SECONDS = 90
+
+    async def _closing_timeout(self) -> None:
+        await asyncio.sleep(self.CLOSING_REPLY_TIMEOUT_SECONDS)
+        if self.state and self.state.state == SessionState.CLOSING:
+            await self.emit_avatar_speak("Thank you for your time today. Your report will be ready shortly.")
+            await self._finish_round()
+
+    async def _finish_round(self) -> None:
+        """Sends the round summary and ends the session (once)."""
+        if not self.state or self.state.state != SessionState.CLOSING:
+            return
+        task, self._closing_timeout_task = self._closing_timeout_task, None
+        if task and task is not asyncio.current_task():
+            task.cancel()
+        scores = [c["score"] for c in self.state.session_context if c.get("score") is not None]
+        summary = {
+            "total_questions": len(self.state.session_context),
+            "average_score": round(sum(scores) / len(scores), 1) if scores else None,
+            "topics_covered": list({c.get("topic") for c in self.state.session_context if c.get("topic")}),
+            "elapsed_time_seconds": round(self.state.elapsed_time, 1),
+        }
+        await self.emit_round_end(summary)
+        self.transition_to(SessionState.ENDED)
+        await self.run_state_action()
 
     async def _finish_answer(self, reason: str = "manual", answer_text: Optional[str] = None) -> None:
         """
@@ -831,11 +893,13 @@ class SessionOrchestrator:
         self.state.last_heartbeat = now
         self._persist_throttled()
 
-        # Handle candidate questions during CLOSING / wrap-up
-        if self.state.state in (SessionState.CLOSING, SessionState.ENDED) and msg_type in ("answer_ended", "client_query", "candidate_question"):
-            query_text = data.get("text", "")
-            ans = handle_closing_inquiry(query_text)
+        # Candidate's reply to "any questions for me?" ends the round
+        if self.state.state == SessionState.CLOSING and msg_type in ("answer_ended", "client_query", "candidate_question"):
+            ans = handle_closing_inquiry(data.get("text", ""))
             await self.emit_avatar_speak(ans["text"])
+            await self._finish_round()
+            return
+        if self.state.state == SessionState.ENDED and msg_type in ("answer_ended", "client_query", "candidate_question"):
             return
 
         # 1. Heartbeat

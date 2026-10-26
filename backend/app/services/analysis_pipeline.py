@@ -13,6 +13,7 @@ import json
 import uuid
 import asyncio
 import logging
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -563,7 +564,12 @@ class AnalysisJobManager:
         If a job already exists and is active or completed, returns it directly without duplicating.
         """
         existing = self.get_job_status(session_id)
-        if existing and existing.get("status") in ("processing", "completed", "partial"):
+        # "pending" counts as active only while this process holds the job; a pending row left by
+        # a crashed process can still be re-enqueued.
+        if existing and (
+            existing.get("status") in ("processing", "completed", "partial")
+            or (existing.get("status") == "pending" and session_id in self._memory_jobs)
+        ):
             logger.info("Idempotent check: session #%d analysis job already active/complete.", session_id)
             return existing
 
@@ -590,7 +596,13 @@ class AnalysisJobManager:
                 db_job.current_step = "Queued in analysis pipeline"
                 db_job.error_message = None
                 db_job.started_at = datetime.now(timezone.utc)
-            db.commit()
+            try:
+                db.commit()
+            except IntegrityError:
+                # The live session and POST /finalize can both enqueue when the round ends.
+                db.rollback()
+                logger.info("Analysis job for session #%d was enqueued concurrently; reusing it.", session_id)
+                return self.get_job_status(session_id) or {"session_id": session_id, "status": "pending"}
         finally:
             db.close()
 
