@@ -8,7 +8,6 @@ Processes real-time video frames (1 fps) and audio chunks (16 kHz) in parallel w
 
 import os
 import re
-import cv2
 import time
 import math
 import json
@@ -19,7 +18,25 @@ import numpy as np
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple, Callable
 
-import mediapipe as mp
+
+# opencv / mediapipe are worker-only dependencies (requirements-worker.txt).
+# They are imported lazily so the API starts without them; without them video
+# frames are simply not analysed (metrics reported as not measured).
+_cv2 = None
+_mp = None
+
+
+def _load_cv():
+    global _cv2, _mp
+    if _cv2 is None:
+        try:
+            import cv2 as _c
+            import mediapipe as _m
+            _cv2, _mp = _c, _m
+        except ImportError:
+            logger.warning("opencv/mediapipe not installed: video frames will not be analysed")
+            _cv2, _mp = False, False
+    return _cv2, _mp
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import SignalTimeSeries, SessionCalibration
@@ -168,8 +185,9 @@ class VideoSignalWorker:
     def __init__(self):
         # Initialize MediaPipe FaceMesh with safe fallback
         self._face_mesh = None
+        cv2, mp = _load_cv()
         try:
-            if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
+            if mp and hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
                 self._mp_face_mesh = mp.solutions.face_mesh
                 self._face_mesh = self._mp_face_mesh.FaceMesh(
                     static_image_mode=True,
@@ -196,6 +214,9 @@ class VideoSignalWorker:
             else:
                 return None
 
+            cv2, _ = _load_cv()
+            if not cv2:
+                return None
             nparr = np.frombuffer(raw_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             return img
@@ -243,6 +264,7 @@ class VideoSignalWorker:
             return {}
 
         h, w, _ = img.shape
+        cv2, _ = _load_cv()
         rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         try:
             results = self._face_mesh.process(rgb_img)
