@@ -195,10 +195,11 @@ def google_auth(
     try:
         id_info = verify_google_id_token(token_str.strip(), client_id=client_id)
     except ValueError as e:
-        logging.getLogger("intervai.auth").info("Google ID token rejected: %s", e)
+        # verify_google_id_token raises ValueError with client-facing messages about the
+        # caller's own token (audience/issuer/unverified email); safe to return.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Google ID token verification failed.",
+            detail=str(e),
         )
     except Exception:
         logging.getLogger("intervai.auth").exception("Google ID token verification error")

@@ -120,6 +120,9 @@ class SessionOrchestrator:
         self.state: Optional[SessionStateData] = None
         self._is_running: bool = False
         self._last_tick_time: float = time.time()
+        self._last_persist_time: float = 0.0
+        self._send_lock = asyncio.Lock()
+        self._keepalive_task: Optional[asyncio.Task] = None
 
     # =========================================================================
     # 1. STATE INITIALIZATION & RESUMPTION
@@ -199,14 +202,23 @@ class SessionOrchestrator:
         if self.ws:
             payload = {"type": event_type, "session_id": self.session_id, **data}
             try:
-                await self.ws.send_json(payload)
+                # Serialize sends: the keepalive task and the event loop share one socket.
+                async with self._send_lock:
+                    await self.ws.send_json(payload)
             except Exception as e:
                 logger.warning("Error emitting event %s for session #%d: %s", event_type, self.session_id, e)
 
     async def emit_avatar_speak(self, text: str, voice_style: str = "neutral") -> None:
         """Server -> Client: avatar_speak (text, audio_url, cache_key, language)."""
         lang = self.state.language if self.state else "English"
-        synth = default_tts_service.synthesize_speech(text, language=lang, voice_style=voice_style)
+        # TTS may hit the network or disk: never run it on the event loop thread.
+        try:
+            synth = await asyncio.to_thread(
+                default_tts_service.synthesize_speech, text, language=lang, voice_style=voice_style
+            )
+        except Exception:
+            logger.exception("TTS synthesis failed for session #%d; sending text only", self.session_id)
+            synth = {}
         await self.emit("avatar_speak", {
             "text": text,
             "audio_url": synth.get("audio_url", ""),
@@ -231,14 +243,6 @@ class SessionOrchestrator:
     async def emit_nudge(self, text: str, reason: str = "silence") -> None:
         """Server -> Client: nudge (text, reason)."""
         await self.emit("nudge", {
-            "text": text,
-            "reason": reason,
-            "timestamp": time.time(),
-        })
-
-    async def emit_redirect(self, text: str, reason: str = "off_topic") -> None:
-        """Server -> Client: redirect (text, reason)."""
-        await self.emit("redirect", {
             "text": text,
             "reason": reason,
             "timestamp": time.time(),
@@ -396,15 +400,31 @@ class SessionOrchestrator:
     # 3. STATE MACHINE TRANSITIONS
     # =========================================================================
 
+    PERSIST_MIN_INTERVAL_SECONDS = 2.0
+
     def _persist(self) -> None:
-        """Saves current in-memory state to Redis."""
+        """Saves current in-memory state to the state store (used on transitions)."""
         if self.state:
             now = time.time()
             dt = max(0.0, now - self._last_tick_time)
             self._last_tick_time = now
             self.state.elapsed_time += dt
             self.state.updated_at = now
+            self._last_persist_time = now
             self.state_store.save_state(self.state)
+
+    def _persist_throttled(self) -> None:
+        """High-frequency paths (audio/video/heartbeat) persist at most every ~2s."""
+        if time.time() - self._last_persist_time >= self.PERSIST_MIN_INTERVAL_SECONDS:
+            self._persist()
+
+    async def _evaluate_answer(self, question: Dict[str, Any], answer: str) -> Dict[str, Any]:
+        """Runs the evaluator without blocking the event loop."""
+        ctx = self.state.session_context if self.state else []
+        evaluate_async = getattr(self.evaluator, "evaluate_async", None)
+        if evaluate_async is not None:
+            return await evaluate_async(question, answer, ctx, session_id=self.session_id)
+        return await asyncio.to_thread(self.evaluator.evaluate, question, answer, ctx, session_id=self.session_id)
 
     def transition_to(self, new_state: SessionState) -> None:
         """Transitions state and records history."""
@@ -522,8 +542,8 @@ class SessionOrchestrator:
             # -----------------------------------------------------------------
             elif curr_state == SessionState.EVALUATING:
                 curr_q = self.state.current_question or {}
-                ans_text = self.state.current_answer_text or "Candidate provided no verbal response."
-                eval_res = self.evaluator.evaluate(curr_q, ans_text, self.state.session_context, session_id=self.session_id)
+                ans_text = self.state.current_answer_text or ""
+                eval_res = await self._evaluate_answer(curr_q, ans_text)
 
                 # Append to persistent session context with validated evaluation metrics
                 context_item = {
@@ -592,6 +612,7 @@ class SessionOrchestrator:
 
                     redirect_msg = route.get("redirect_message") or f"Let's refocus on the original question: {curr_q.get('text', '')}"
                     await self.emit("redirect", {
+                        "text": redirect_msg,
                         "message": redirect_msg,
                         "question": curr_q,
                         "reason": route.get("reason", "off_topic"),
@@ -677,9 +698,9 @@ class SessionOrchestrator:
                 self._persist()
                 # Finalize recordings, update session status to CLOSED, and store file keys
                 from app.services.analysis_pipeline import default_analysis_manager
-                rec_meta = default_analysis_manager.close_and_finalize_session(self.session_id)
-                # Enqueue analysis job to the pipeline
-                analysis_job = default_analysis_manager.enqueue_analysis_job(self.session_id)
+                # Both touch disk/DB; keep them off the event loop.
+                await asyncio.to_thread(default_analysis_manager.close_and_finalize_session, self.session_id)
+                analysis_job = await asyncio.to_thread(default_analysis_manager.enqueue_analysis_job, self.session_id)
                 logger.info("Session #%d ended: analysis job enqueued (%s)", self.session_id, analysis_job.get("job_id"))
 
                 # Clean close
@@ -687,14 +708,14 @@ class SessionOrchestrator:
                     try:
                         await self.ws.close(code=1000, reason="Interview completed cleanly")
                     except Exception:
-                        pass
+                        logger.debug("WebSocket already closed for session #%d", self.session_id)
 
         except Exception as e:
-            logger.exception("Error executing orchestrator action: %s", e)
+            logger.exception("Error executing orchestrator action for session #%d", self.session_id)
             if self.state:
-                self.state.error_detail = str(e)
+                self.state.error_detail = f"{type(e).__name__}"
                 self.transition_to(SessionState.ERROR)
-                await self.emit("error", {"detail": str(e), "timestamp": time.time()})
+                await self.emit("error", {"code": "internal_error", "detail": "Internal server error", "timestamp": time.time()})
 
     # =========================================================================
     # 3.5 ANSWER CAPTURE, VAD & SILENCE NUDGE HELPERS
@@ -746,7 +767,7 @@ class SessionOrchestrator:
         final_text = (
             answer_text.strip()
             if answer_text and answer_text.strip()
-            else (self.state.current_answer_text or "Candidate delivered structured technical response.")
+            else (self.state.current_answer_text or "")
         )
         self.state.current_answer_text = final_text
 
@@ -755,7 +776,7 @@ class SessionOrchestrator:
         if not current_trans.get("text") or current_trans.get("text") != final_text:
             current_trans = self.stt_service.append_transcript_text(q_id, final_text)
 
-        self.storage_manager.save_transcript(self.session_id, q_id, current_trans)
+        await asyncio.to_thread(self.storage_manager.save_transcript, self.session_id, q_id, current_trans)
         self.state.question_transcripts[q_id] = current_trans
         self._persist()
         await self.signal_processor.store.flush()
@@ -807,7 +828,7 @@ class SessionOrchestrator:
                 pass
 
         self.state.last_heartbeat = now
-        self._persist()
+        self._persist_throttled()
 
         # Handle candidate questions during CLOSING / wrap-up
         if self.state.state in (SessionState.CLOSING, SessionState.ENDED) and msg_type in ("answer_ended", "client_query", "candidate_question"):
@@ -845,13 +866,14 @@ class SessionOrchestrator:
                 try:
                     import base64
                     raw_audio = base64.b64decode(data["data"])
-                except Exception:
-                    raw_audio = str(data["data"]).encode("utf-8")
+                except (ValueError, TypeError):
+                    logger.warning("Session #%d: audio_chunk data is not valid base64; dropping payload", self.session_id)
+                    raw_audio = b""
             elif "bytes" in data and isinstance(data["bytes"], bytes):
                 raw_audio = data["bytes"]
 
             if raw_audio:
-                self.storage_manager.save_audio_chunk(self.session_id, q_id, chunk_id, raw_audio)
+                await asyncio.to_thread(self.storage_manager.save_audio_chunk, self.session_id, q_id, chunk_id, raw_audio)
                 # Parallel Audio Signal Worker (asynchronous with backpressure)
                 self.signal_processor.push_audio_chunk(
                     session_id=self.session_id,
@@ -880,9 +902,9 @@ class SessionOrchestrator:
             if text_fragment:
                 timed_res = self.stt_service.append_transcript_text(q_id, text_fragment)
                 self.state.current_answer_text = timed_res["text"]
-                self.storage_manager.save_transcript(self.session_id, q_id, timed_res)
+                await asyncio.to_thread(self.storage_manager.save_transcript, self.session_id, q_id, timed_res)
 
-            self._persist()
+            self._persist_throttled()
             await self.emit("chunk_ack", {
                 "chunk_id": chunk_id,
                 "is_speech": is_speech,
@@ -912,7 +934,7 @@ class SessionOrchestrator:
             q_id = self.state.current_question.get("id", 1) if self.state.current_question else 1
             frame_data = data.get("frame") or data.get("data")
             if frame_data:
-                self.storage_manager.save_video_frame(self.session_id, q_id, frame_id, frame_data)
+                await asyncio.to_thread(self.storage_manager.save_video_frame, self.session_id, q_id, frame_id, frame_data)
                 # Parallel Video Signal Worker (asynchronous with backpressure)
                 self.signal_processor.push_video_frame(
                     session_id=self.session_id,
@@ -922,7 +944,7 @@ class SessionOrchestrator:
                     calibration=self.calibration,
                     on_metrics_callback=self.integrity_monitor.on_video_metrics,
                 )
-            self._persist()
+            self._persist_throttled()
             await self.emit("video_frame_ack", {
                 "frame_id": frame_id,
                 "received_at": now,
@@ -987,23 +1009,13 @@ class SessionOrchestrator:
             await self._finish_answer(reason="manual", answer_text=raw_text)
             return
 
-        # 7. Backward-compatible Phase 3 messages
+        # 7. Client keepalive
         elif msg_type == "ping":
             await self.emit("pong", {"timestamp": now})
 
-        elif msg_type == "media_chunk":
-            self.state.audio_chunks_received += 1
-            await self.emit("chunk_ack", {
-                "chunk_id": data.get("chunk_id", self.state.audio_chunks_received),
-                "size": len(data.get("data", "")),
-                "received_at": now,
-            })
-
-        elif msg_type == "calibration_event":
-            await self.emit("calibration_ack", {"timestamp": now})
-
         else:
-            await self.emit("ack", {"original_type": msg_type, "timestamp": now})
+            # Unknown types are acknowledged but ignored (non-fatal, so older clients keep working).
+            await self.emit("ack", {"original_type": msg_type, "ignored": True, "timestamp": now})
 
         # Check 8-second silence rule whenever candidate is listening
         if self.state.state == SessionState.LISTENING:
@@ -1013,7 +1025,20 @@ class SessionOrchestrator:
     # 5. MAIN CONNECTION LIFECYCLE & RESUME LOGIC
     # =========================================================================
 
-    async def start(self, websocket: WebSocket) -> None:
+    async def _keepalive_loop(self) -> None:
+        """Server heartbeat: a 'keepalive' frame every WS_SERVER_PING_SECONDS, independent of
+        state actions, so proxies and clients see traffic even during long evaluations."""
+        interval = max(1.0, float(settings.WS_SERVER_PING_SECONDS))
+        try:
+            while self._is_running:
+                await asyncio.sleep(interval)
+                if not self._is_running:
+                    break
+                await self.emit("keepalive", {"server_time": time.time()})
+        except asyncio.CancelledError:
+            pass
+
+    async def start(self, websocket: WebSocket, first_message: Optional[Dict[str, Any]] = None) -> None:
         """
         Accepts the WebSocket connection, checks for reconnection, synchronizes state,
         and enters the main event loop.
@@ -1022,6 +1047,7 @@ class SessionOrchestrator:
         self._is_running = True
         self._last_tick_time = time.time()
         self.integrity_monitor.set_emit_callback(self.emit)
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
         # Load existing state or initialize fresh
         is_reconnect = False
@@ -1060,6 +1086,8 @@ class SessionOrchestrator:
 
         # Main receiver loop
         try:
+            if first_message is not None:
+                await self.handle_client_event(first_message)
             while self._is_running and self.state and self.state.state != SessionState.ENDED:
                 try:
                     raw = await asyncio.wait_for(self.ws.receive(), timeout=1.0)
@@ -1073,13 +1101,13 @@ class SessionOrchestrator:
                         data = json.loads(raw["text"])
                         await self.handle_client_event(data)
                     except json.JSONDecodeError:
-                        await self.emit("error", {"detail": "Invalid JSON frame format"})
+                        await self.emit("error", {"code": "invalid_json", "detail": "Invalid JSON frame format"})
 
                 elif "bytes" in raw and raw["bytes"]:
                     self.state.audio_chunks_received += 1
                     raw_bytes = raw["bytes"]
                     q_id = self.state.current_question.get("id", 1) if self.state.current_question else 1
-                    self.storage_manager.save_audio_chunk(self.session_id, q_id, self.state.audio_chunks_received, raw_bytes)
+                    await asyncio.to_thread(self.storage_manager.save_audio_chunk, self.session_id, q_id, self.state.audio_chunks_received, raw_bytes)
                     now = time.time()
                     is_speech, should_end, silence_dur = self.voice_tracker.feed_audio(raw_bytes, current_time=now)
                     if is_speech:
@@ -1090,7 +1118,7 @@ class SessionOrchestrator:
                         "is_speech": is_speech,
                         "received_at": now,
                     })
-                    self._persist()
+                    self._persist_throttled()
                     if should_end and self.state.state == SessionState.LISTENING:
                         logger.info("Binary VAD detected silence timeout; ending answer.")
                         await self._finish_answer(reason="vad_silence")
@@ -1098,10 +1126,12 @@ class SessionOrchestrator:
 
         except (WebSocketDisconnect, RuntimeError):
             logger.info("WebSocket disconnected for session #%d", self.session_id)
-        except Exception as e:
-            logger.warning("WebSocket exception for session #%d: %s", self.session_id, e)
+        except Exception:
+            logger.exception("WebSocket exception for session #%d", self.session_id)
         finally:
             self._is_running = False
+            if self._keepalive_task:
+                self._keepalive_task.cancel()
             if self.state:
                 self.state.is_connected = False
                 self._persist()

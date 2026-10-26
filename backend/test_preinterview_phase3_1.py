@@ -162,7 +162,7 @@ class TestPreinterviewPhase3_1(unittest.TestCase):
         self.assertEqual(s_data["interview_id"], cfg_id)
         self.assertEqual(s_data["status"], "created")
         self.assertTrue(len(s_data["session_token"]) > 20)
-        self.assertIn(f"/session/{s_data['id']}/stream?token={s_data['session_token']}", s_data["ws_url"])
+        self.assertIn(f"/session/{s_data['id']}/live?token={s_data['session_token']}&autostart=false", s_data["ws_url"])
 
         # Step 4: GET /session/{id}
         get_sess = client.get(

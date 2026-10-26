@@ -174,7 +174,10 @@ def get_tts_audio(cache_key: str):
 
 
 @router.post("/tts/synthesize")
-def synthesize_tts(payload: Dict[str, Any]):
+def synthesize_tts(
+    payload: Dict[str, Any],
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
+):
     """
     Synthesizes speech audio for a text phrase, returns audio URL and cache status.
     """
@@ -184,6 +187,8 @@ def synthesize_tts(payload: Dict[str, Any]):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Text parameter is required for TTS synthesis.",
         )
+    if len(text) > 2000:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Text too long for TTS synthesis.")
     language = payload.get("language", "English")
     voice_style = payload.get("voice_style", "neutral")
     return default_tts_service.synthesize_speech(text, language=language, voice_style=voice_style)
@@ -202,7 +207,7 @@ def _build_ws_url(request: Request, session_id: int, token: str) -> str:
     proto = (trust and request.headers.get("x-forwarded-proto")) or request.url.scheme
     scheme = "wss" if proto == "https" else "ws"
     host = (trust and request.headers.get("x-forwarded-host")) or request.headers.get("host", "127.0.0.1:8000")
-    return f"{scheme}://{host}/session/{session_id}/stream?token={token}"
+    return f"{scheme}://{host}/session/{session_id}/live?token={token}&autostart=false"
 
 
 @router.post("", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
@@ -662,171 +667,122 @@ def get_session_state(
 
 
 @router.websocket("/{id}/live")
-@router.websocket("/{id}/orchestrate")
-async def session_live_orchestrator_websocket(
+async def session_live_websocket(
     websocket: WebSocket,
     id: int,
     token: Optional[str] = Query(None),
+    autostart: bool = Query(True),
 ):
     """
-    Core Phase 4 Interview Session Orchestrator WebSocket endpoint.
-    Drives state machine (GREETING -> WARMUP -> ASKING -> LISTENING ->
-    EVALUATING -> ROUTING -> CLOSING -> ENDED) with Redis persistence and reconnection recovery.
+    The single live-interview WebSocket. Protocol: backend/WS_PROTOCOL.md.
+
+    autostart=true  (default): the interview state machine starts immediately.
+    autostart=false: pre-check mode; only ping/media_chunk/calibration_event are
+                     acknowledged until the client sends any other message, which
+                     starts the interview and is then handled normally.
     """
+    await _serve_session_ws(websocket, id, token, autostart)
+
+
+@router.websocket("/{id}/orchestrate")
+async def session_orchestrate_websocket_alias(websocket: WebSocket, id: int, token: Optional[str] = Query(None)):
+    """Deprecated alias for /{id}/live."""
+    await _serve_session_ws(websocket, id, token, autostart=True)
+
+
+@router.websocket("/{id}/stream")
+async def session_stream_websocket_alias(
+    websocket: WebSocket,
+    id: int,
+    token: Optional[str] = Query(None),
+    orchestrate: bool = Query(False),
+):
+    """Deprecated alias for /{id}/live?autostart=false (or autostart=true with ?orchestrate=true)."""
+    await _serve_session_ws(websocket, id, token, autostart=orchestrate)
+
+
+_PRECHECK_TYPES = ("ping", "media_chunk", "calibration_event")
+
+
+async def _serve_session_ws(websocket: WebSocket, id: int, token: Optional[str], autostart: bool) -> None:
+    import json
+
     db = SessionLocal()
-    session = None
     try:
         session = authenticate_ws_session(db, id, token)
         if not session:
             logger.warning("[WS] Rejected connection for session #%d: invalid or missing credentials", id)
             await websocket.close(code=1008, reason="Unauthorized")
             return
-
         await websocket.accept()
-        logger.info("[WS ORCHESTRATOR] Accepted connection for session #%d (user_id=%s)", id, session.user_id)
-
         session.status = "active"
         db.commit()
         user_id = session.user_id
+    finally:
         db.close()
-        db = None
+
+    logger.info("[WS] Accepted connection for session #%d (autostart=%s)", id, autostart)
+    try:
+        first_message = None
+        if not autostart:
+            await websocket.send_json({
+                "type": "connected",
+                "session_id": id,
+                "status": "active",
+                "state": "PRECHECK",
+                "message": "IntervAI live stream connection established.",
+                "timestamp": time.time(),
+            })
+            chunk_counter = 0
+            while first_message is None:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    return
+                if message.get("bytes"):
+                    chunk_counter += 1
+                    await websocket.send_json({
+                        "type": "binary_chunk_ack",
+                        "session_id": id,
+                        "chunk_id": chunk_counter,
+                        "size": len(message["bytes"]),
+                        "received_at": time.time(),
+                    })
+                    continue
+                if not message.get("text"):
+                    continue
+                try:
+                    data = json.loads(message["text"])
+                except json.JSONDecodeError:
+                    await websocket.send_json({"type": "error", "session_id": id, "code": "invalid_json", "detail": "Invalid JSON frame format"})
+                    continue
+                msg_type = data.get("type")
+                if msg_type == "ping":
+                    await websocket.send_json({"type": "pong", "session_id": id, "timestamp": time.time()})
+                elif msg_type == "media_chunk":
+                    chunk_counter += 1
+                    await websocket.send_json({
+                        "type": "chunk_ack",
+                        "session_id": id,
+                        "chunk_id": data.get("chunk_id", chunk_counter),
+                        "size": len(data.get("data", "") or ""),
+                        "received_at": time.time(),
+                    })
+                elif msg_type == "calibration_event":
+                    await websocket.send_json({"type": "calibration_ack", "session_id": id, "timestamp": time.time()})
+                else:
+                    first_message = data
 
         orchestrator = SessionOrchestrator(session_id=id, user_id=user_id)
-        await orchestrator.start(websocket)
+        await orchestrator.start(websocket, first_message=first_message)
 
     except WebSocketDisconnect:
         logger.info("[WS] Client disconnected from session #%d", id)
     except Exception:
         logger.exception("[WS] Unhandled error in live session #%d", id)
         try:
-            await websocket.send_json({"type": "error", "code": "internal_error", "detail": "Internal server error"})
+            await websocket.send_json({"type": "error", "session_id": id, "code": "internal_error", "detail": "Internal server error"})
         except Exception:
             logger.debug("[WS] Could not deliver error frame for session #%d", id)
-    finally:
-        if db:
-            db.close()
-
-
-@router.websocket("/{id}/stream")
-async def session_stream_websocket(
-    websocket: WebSocket,
-    id: int,
-    token: Optional[str] = Query(None),
-    orchestrate: bool = Query(False),
-):
-    """
-    WebSocket endpoint for real-time media chunk streaming (MediaRecorder chunks)
-    and session control messages.
-    If orchestrate=true, delegates to the full Phase 4 SessionOrchestrator state machine.
-    Authenticates via ?token= query parameter.
-    """
-    db = SessionLocal()
-    session = None
-    try:
-        if not token:
-            await websocket.close(code=1008, reason="Missing session token")
-            return
-
-        session = authenticate_ws_session(db, id, token)
-        if not session:
-            await websocket.close(code=1008, reason="Unauthorized")
-            return
-
-        await websocket.accept()
-
-        # Update session status to active on connection
-        session.status = "active"
-        db.commit()
-
-        # If full orchestrator requested on stream endpoint, delegate to SessionOrchestrator
-        if orchestrate:
-            user_id = session.user_id
-            db.close()
-            db = None
-            orchestrator = SessionOrchestrator(session_id=id, user_id=user_id)
-            await orchestrator.start(websocket)
-            return
-
-        # Send greeting / connection established frame for Phase 3 stream compatibility
-        await websocket.send_json({
-            "type": "connected",
-            "session_id": id,
-            "status": "active",
-            "message": "IntervAI live stream connection established.",
-            "timestamp": time.time(),
-        })
-
-        chunk_counter = 0
-
-        while True:
-            # Receive text or binary message
-            message = await websocket.receive()
-
-            if "text" in message and message["text"]:
-                try:
-                    import json
-                    data = json.loads(message["text"])
-                    msg_type = data.get("type", "unknown")
-
-                    if msg_type == "ping":
-                        await websocket.send_json({
-                            "type": "pong",
-                            "timestamp": time.time(),
-                        })
-
-                    elif msg_type == "media_chunk":
-                        chunk_counter += 1
-                        chunk_id = data.get("chunk_id", chunk_counter)
-                        payload_size = len(data.get("data", ""))
-                        await websocket.send_json({
-                            "type": "chunk_ack",
-                            "chunk_id": chunk_id,
-                            "size": payload_size,
-                            "received_at": time.time(),
-                        })
-
-                    elif msg_type == "calibration_event":
-                        await websocket.send_json({
-                            "type": "calibration_ack",
-                            "timestamp": time.time(),
-                        })
-
-                    elif msg_type in ("start_interview", "heartbeat", "answer_started"):
-                        # Dynamic transition to orchestrator if client issues orchestrator command
-                        orchestrator = SessionOrchestrator(session_id=id, user_id=session.user_id)
-                        await orchestrator.start(websocket)
-                        return
-
-                    else:
-                        await websocket.send_json({
-                            "type": "ack",
-                            "original_type": msg_type,
-                            "timestamp": time.time(),
-                        })
-
-                except Exception:
-                    await websocket.send_json({
-                        "type": "error",
-                        "detail": "Failed to parse JSON text frame",
-                    })
-
-            elif "bytes" in message and message["bytes"]:
-                chunk_counter += 1
-                raw_bytes = message["bytes"]
-                await websocket.send_json({
-                    "type": "binary_chunk_ack",
-                    "chunk_id": chunk_counter,
-                    "size": len(raw_bytes),
-                    "received_at": time.time(),
-                })
-
-    except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass
-    finally:
-        if db:
-            db.close()
 
 
 @router.get("/{id}/question/{question_id}/artifacts")

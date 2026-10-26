@@ -28,6 +28,16 @@ from app.models import (
 from app.services.answer_capture_service import default_storage_manager, AnswerStorageManager
 from app.services.session_state import default_state_store
 
+import threading
+
+
+def _on_event_loop_thread() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
 logger = logging.getLogger("intervai.analysis_pipeline")
 
 
@@ -492,19 +502,24 @@ class AnalysisJobManager:
                     e,
                 )
                 if retries <= max_retries:
-                    # Exponential backoff
-                    time.sleep(backoff_delay)
+                    # Exponential backoff. This method always runs on a worker thread
+                    # (executor / background thread / explicit sync call), never on the
+                    # event loop; refuse to sleep if someone calls it from a loop thread.
+                    if _on_event_loop_thread():
+                        logger.error("run_analysis_pipeline_sync called on the event loop; skipping backoff sleep")
+                    else:
+                        time.sleep(backoff_delay)
                     backoff_delay *= 2.0
                 else:
                     # Retries exhausted -> mark failed
-                    logger.error("Analysis job failed permanently for session #%d: %s", session_id, e)
+                    logger.exception("Analysis job failed permanently for session #%d", session_id)
                     return self._update_job(
                         session_id=session_id,
                         job_id=job_id,
                         status="failed",
                         progress=0,
                         current_step="Failed",
-                        error_message=str(e),
+                        error_message="Analysis failed. Please retry later.",
                         completed=True,
                     )
 
@@ -581,12 +596,14 @@ class AnalysisJobManager:
                 simulate_failure_step,
             )
         except RuntimeError:
-            # Fallback if no running loop in thread: run inline
-            self.run_analysis_pipeline_sync(
-                session_id=session_id,
-                job_id=job_id,
-                simulate_failure_step=simulate_failure_step,
-            )
+            # No running loop (called from a sync endpoint or a worker thread): run in a
+            # background thread instead of blocking the caller for the whole pipeline.
+            threading.Thread(
+                target=self.run_analysis_pipeline_sync,
+                args=(session_id, job_id, 3, simulate_failure_step),
+                name=f"analysis-{session_id}",
+                daemon=True,
+            ).start()
 
         return self.get_job_status(session_id)
 

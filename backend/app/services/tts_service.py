@@ -82,7 +82,10 @@ class TTSService:
 
     def __init__(self, provider: Optional[BaseTTSProvider] = None, cache_dir: Optional[str] = None):
         self.provider = provider or CloudTTSProvider()
-        self.cache_dir = cache_dir or os.path.join(os.path.dirname(__file__), "..", "..", "cache", "tts")
+        if cache_dir is None:
+            from app.config import settings
+            cache_dir = settings.data_path("cache", "tts")
+        self.cache_dir = cache_dir
         os.makedirs(self.cache_dir, exist_ok=True)
         self._memory_cache: Dict[str, Tuple[bytes, str]] = {}
 
@@ -153,6 +156,8 @@ class TTSService:
 
     def get_cached_audio(self, cache_key: str) -> Optional[Tuple[bytes, str]]:
         """Retrieves raw audio bytes and MIME type by cache key."""
+        if not cache_key or not all(c in "0123456789abcdef" for c in cache_key) or len(cache_key) > 64:
+            return None
         if cache_key in self._memory_cache:
             return self._memory_cache[cache_key]
 
