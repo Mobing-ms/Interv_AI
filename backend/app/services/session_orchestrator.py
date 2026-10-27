@@ -574,6 +574,7 @@ class SessionOrchestrator:
                 self.state.current_answer_text = ""
                 self.state.current_question_nudged = False
                 self.state.current_question_speech_detected = False
+                self.state.current_question_reprompted = False
                 self.state.current_answer_start = None
                 self.voice_tracker.reset()
                 self.stt_service.reset_question(warmup_q["id"])
@@ -602,6 +603,7 @@ class SessionOrchestrator:
                 self.state.current_answer_text = ""
                 self.state.current_question_nudged = False
                 self.state.current_question_speech_detected = False
+                self.state.current_question_reprompted = False
                 self.state.current_answer_start = None
                 self.voice_tracker.reset()
                 if "id" in q:
@@ -932,6 +934,23 @@ class SessionOrchestrator:
             final_text = whisper["text"].strip()
         else:
             whisper = None
+
+        # The mic heard speech but no transcript survived: ask once to repeat instead of scoring a blank
+        topic = (self.state.current_question or {}).get("topic")
+        if not final_text and not typed and self.state.current_question_speech_detected \
+                and not self.state.current_question_reprompted and topic != "Closing":
+            self.state.current_question_reprompted = True
+            self.state.current_answer_text = ""
+            logger.warning("Session #%d: speech heard but no transcript; asking to repeat", self.session_id)
+            lang = self.state.language or "English"
+            text = "Sorry, I didn't catch that. Could you say it again?"
+            try:
+                synth = await asyncio.to_thread(default_tts_service.synthesize_speech, text, language=lang, voice_style="neutral")
+            except Exception:
+                synth = {}
+            # Stays LISTENING; the client's client_ready after this line restarts the timer
+            await self.emit("retry_answer", {"text": text, "audio_url": synth.get("audio_url", ""), "language": synth.get("language", "en")})
+            return
         self.state.current_answer_text = final_text
 
         # Replace (never append to) the streamed transcript with the final one

@@ -32,8 +32,10 @@ export default function Precheck() {
   }, []);
 
   // Acquire camera + mic on the device step and drive the level meter.
+  // Keyed on "devices on" only: depending on stream re-ran this after setStream and its cleanup killed the meter.
+  const devicesOn = step >= 1;
   useEffect(() => {
-    if (step < 1 || stream) return;
+    if (!devicesOn) return;
     let raf = 0, ctx: AudioContext | null = null, cancelled = false;
     navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: { width: { ideal: 640 }, height: { ideal: 480 } } })
       .then((s) => {
@@ -60,7 +62,7 @@ export default function Precheck() {
       })
       .catch((e) => setDeviceErr(e?.name === 'NotAllowedError' ? 'Camera or microphone access was blocked. Allow it in the address bar, then retry.' : 'No camera or microphone found.'));
     return () => { cancelled = true; cancelAnimationFrame(raf); ctx?.close(); };
-  }, [step, stream]);
+  }, [devicesOn]);
 
   useEffect(() => {
     if (videoRef.current && stream) { videoRef.current.srcObject = stream; videoRef.current.play().catch(() => {}); }
