@@ -39,6 +39,8 @@ class LLMService:
             return True
         if self.provider in ("openai", "azure", "groq", "gemini") and bool(self.api_key):
             return True
+        if self.provider == "ollama":
+            return True
         return False
 
     async def generate_structured_async(
@@ -55,8 +57,48 @@ class LLMService:
             schema_cls=response_schema,
         )
 
-    async def call_raw_llm(self, system_prompt: str, user_prompt: str, session_id: Optional[int] = None) -> str:
-        """Invokes the configured LLM provider and returns the raw string response."""
+    async def call_raw_llm(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        session_id: Optional[int] = None,
+        retries: Optional[int] = None,
+    ) -> str:
+        """
+        The single entry point for LLM calls: async (httpx), bounded by LLM_TIMEOUT_SECONDS
+        per attempt, retried with exponential backoff on network errors / 5xx / 429.
+        """
+        attempts = (self.max_retries if retries is None else retries) + 1
+        last_exc: Optional[Exception] = None
+        for attempt in range(attempts):
+            delay = 0.5 * (2 ** attempt)
+            try:
+                return await asyncio.wait_for(
+                    self._call_provider_once(system_prompt, user_prompt, session_id),
+                    timeout=self.timeout + 5.0,
+                )
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                code = e.response.status_code
+                if code != 429 and code < 500:
+                    raise LLMError(f"LLM provider returned HTTP {code}") from e
+                if code == 429:
+                    # Rate limited: wait as long as the provider asks (capped), not the short default backoff.
+                    try:
+                        delay = max(delay, min(float(e.response.headers.get("retry-after", 2)), 15.0))
+                    except ValueError:
+                        delay = max(delay, 2.0)
+            except (httpx.HTTPError, asyncio.TimeoutError) as e:
+                last_exc = e
+            if attempt < attempts - 1:
+                status = getattr(getattr(last_exc, "response", None), "status_code", None)
+                logger.warning("[LLM] attempt %d/%d failed (%s%s); retrying in %.1fs", attempt + 1, attempts,
+                               type(last_exc).__name__, f" HTTP {status}" if status else "", delay)
+                await asyncio.sleep(delay)
+        raise LLMError(f"LLM provider unavailable after {attempts} attempts: {type(last_exc).__name__}") from last_exc
+
+    async def _call_provider_once(self, system_prompt: str, user_prompt: str, session_id: Optional[int] = None) -> str:
+        """One provider round trip; no retries."""
         prompt_size = len(system_prompt) + len(user_prompt)
         sess_tag = f"[session_id={session_id}] " if session_id else ""
         logger.info(f"[LLM]{sess_tag} Dispatching request to provider='{self.provider}' model='{self.model}' | Prompt length: {prompt_size} chars")
@@ -77,7 +119,9 @@ class LLMService:
             return raw_text
 
         elif self.provider in ("openai", "azure", "groq", "ollama"):
-            base_url = self.base_url or "https://api.openai.com/v1"
+            base_url = self.base_url or (
+                "https://api.groq.com/openai/v1" if self.provider == "groq" else "https://api.openai.com/v1"
+            )
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
@@ -91,6 +135,10 @@ class LLMService:
                 "response_format": {"type": "json_object"},
                 "temperature": 0.0,
             }
+            if self.provider == "groq" and self.model.startswith("openai/gpt-oss"):
+                # Long hidden reasoning makes these models hit rate limits and sometimes return
+                # empty JSON (json_validate_failed); interview prompts don't need it.
+                payload["reasoning_effort"] = "low"
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 res = await client.post(f"{base_url.rstrip('/')}/chat/completions", headers=headers, json=payload)
                 res.raise_for_status()
@@ -144,7 +192,7 @@ class LLMService:
 
         for attempt in range(retries + 1):
             try:
-                raw_response = await self.call_raw_llm(system_prompt, current_user_prompt, session_id=session_id)
+                raw_response = await self.call_raw_llm(system_prompt, current_user_prompt, session_id=session_id, retries=0)
 
                 # Strip markdown code fencing if LLM wraps in ```json ... ```
                 clean_response = raw_response.strip()
@@ -179,7 +227,7 @@ class LLMService:
                 else:
                     break
 
-            except (httpx.HTTPError, asyncio.TimeoutError) as net_err:
+            except (httpx.HTTPError, asyncio.TimeoutError, LLMError) as net_err:
                 last_error = str(net_err)
                 logger.warning(
                     f"[LLM]{sess_tag} Network/timeout error on attempt {attempt + 1}/{retries + 1}: {last_error}"

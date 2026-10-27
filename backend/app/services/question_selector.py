@@ -37,10 +37,13 @@ def select_next_question(
     asked_texts = set()
     topic_counts: Dict[str, int] = {}
     main_asked_count = 0
+    last_main_was_cv: Optional[bool] = None
 
     for item in session_context:
         q_id = item.get("question_id")
         if q_id is not None:
+            if q_id in asked_ids:
+                continue  # a repeated (redirected) question counts once
             asked_ids.add(q_id)
 
         q_text = item.get("question", "").strip().lower()
@@ -53,6 +56,7 @@ def select_next_question(
         if topic and topic not in ("Warmup", "Closing") and not is_followup:
             topic_counts[topic] = topic_counts.get(topic, 0) + 1
             main_asked_count += 1
+            last_main_was_cv = bool(item.get("is_cv_based"))
 
     # 3. Filter question pool to unasked candidates
     available_questions = [
@@ -112,9 +116,12 @@ def select_next_question(
         score = topic_deficit * 100.0
 
         # Prefer CV-based questions when topic fits
+        # Open with a CV question, then alternate CV and topic questions.
         is_cv = bool(q.get("is_cv_based") or q.get("based_on_cv_item"))
-        if is_cv:
+        if is_cv and last_main_was_cv is not True:
             score += 25.0
+        elif is_cv and last_main_was_cv:
+            score -= 60.0  # strong enough to beat topic weighting, so topic questions get their turn
 
         # Match difficulty level
         q_diff = q.get("difficulty", "Medium")

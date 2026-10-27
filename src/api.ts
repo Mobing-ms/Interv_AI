@@ -671,6 +671,10 @@ export const api = {
     });
   },
 
+  async deleteMyData(): Promise<any> {
+    return request('/profile/me/data', { method: 'DELETE' });
+  },
+
   async listUserSessions(): Promise<{ sessions: DashboardSessionItem[] }> {
     return request<{ sessions: DashboardSessionItem[] }>('/session', {
       method: 'GET',

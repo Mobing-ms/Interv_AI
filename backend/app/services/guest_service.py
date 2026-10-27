@@ -67,6 +67,15 @@ def log_guest_ip(ip: str, session_id: Optional[int], db: Session) -> GuestIpLog:
     return record
 
 
+def client_ip_from_request(request) -> str:
+    """Client IP for rate limiting. X-Forwarded-For is only trusted behind a configured proxy."""
+    if settings.TRUST_PROXY_HEADERS:
+        fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if fwd:
+            return fwd
+    return request.client.host if request.client else "127.0.0.1"
+
+
 def verify_turnstile_captcha(token: Optional[str], remote_ip: Optional[str] = None) -> bool:
     """
     Verifies Cloudflare Turnstile CAPTCHA response token.
@@ -74,10 +83,14 @@ def verify_turnstile_captcha(token: Optional[str], remote_ip: Optional[str] = No
     """
     secret_key = settings.TURNSTILE_SECRET_KEY
 
-    # Development & test bypasses
     if not secret_key:
-        return True
-    if token in ("test_pass", "mock_turnstile_token", "1x0000000000000000000000000000000AA"):
+        if settings.is_production:
+            # validate_settings() should already have refused to start; fail closed anyway.
+            logger.error("Turnstile secret missing in production; rejecting guest request")
+            return False
+        return True  # local development without Turnstile configured
+    # Test pass tokens are only honoured outside production.
+    if not settings.is_production and token in ("test_pass", "mock_turnstile_token", "1x0000000000000000000000000000000AA"):
         return True
 
     if not token or not token.strip():
@@ -99,8 +112,8 @@ def verify_turnstile_captcha(token: Optional[str], remote_ip: Optional[str] = No
             return bool(result.get("success", False))
     except Exception as e:
         logger.warning("Turnstile verification failed with network error: %s", e)
-        # If network error or timeout occurs in dev, fail closed unless dev mode
-        return settings.DEV_MODE
+        # Fail closed, except in explicit non-production dev mode.
+        return settings.DEV_MODE and not settings.is_production
 
 
 def generate_guest_questions(

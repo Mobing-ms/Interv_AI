@@ -70,11 +70,38 @@ DATABASE_URL=sqlite:///./intervai.db
 JWT_SECRET_KEY=intervai-super-secret-jwt-key-2026-production-ready
 RECORDING_RETENTION_DAYS=30
 GUEST_RETENTION_HOURS=24
-LLM_PROVIDER=mock          # Options: "mock", "openai", "gemini"
-LLM_API_KEY=               # Set your API key if using real LLM
+LLM_PROVIDER=groq          # Options: "mock", "groq", "openai", "gemini" (see API keys below)
+LLM_API_KEY=               # Your provider key
 GOOGLE_CLIENT_ID=          # Google OAuth Web Client ID
 TURNSTILE_SECRET_KEY=      # Cloudflare Turnstile secret key
 ```
+
+**API keys (where they go):**
+
+All keys go in `backend/.env` (copied from `backend/.env.example` above). That file is git-ignored, so keys never get committed. Without keys the app still runs, but on `mock` providers: canned questions, heuristic grading and no real transcription.
+
+One free [Groq](https://console.groq.com/keys) key covers both the interviewer (LLM) and speech-to-text:
+
+```ini
+# backend/.env
+LLM_PROVIDER=groq
+LLM_MODEL=openai/gpt-oss-20b         # generates questions, grades answers, writes follow-ups
+LLM_API_KEY=gsk_your_groq_key
+
+STT_PROVIDER=groq
+STT_MODEL=whisper-large-v3-turbo     # transcribes each spoken answer
+STT_API_KEY=gsk_your_groq_key        # can be the same key
+```
+
+| Key | What it's for | Needed? |
+|---|---|---|
+| `LLM_API_KEY` | Questions, grading, Ava's reactions and follow-ups | Yes, for a real interview (`mock` otherwise) |
+| `STT_API_KEY` | Whisper transcription of spoken answers | Recommended; without it only the browser's live transcript (Chrome) is used |
+| `JWT_SECRET_KEY` | Signs login tokens | Set any long random string; if empty, logins reset on every restart |
+| `GOOGLE_CLIENT_ID` | "Continue with Google" | Optional |
+| `TURNSTILE_SECRET_KEY` | Bot check on guest mode | Optional in development, required in production |
+
+Restart the backend after changing `.env`. The free Groq tier rate-limits (HTTP 429); the app retries once and then falls back to its built-in rules for that answer.
 
 **Apply Migrations & Seed Demo Data:**
 ```bash
@@ -110,7 +137,7 @@ cp .env.example .env
 
 **Frontend `.env`:**
 ```ini
-VITE_API_BASE_URL=http://localhost:8000
+VITE_API_BASE_URL=http://localhost:8000   # no API keys go in the frontend; they stay in backend/.env
 VITE_GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
 VITE_TURNSTILE_SITE_KEY=1x00000000000000000000AA
 ```

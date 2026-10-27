@@ -232,7 +232,7 @@ class SessionCalibration(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     face_baseline = Column(JSON, default=dict, nullable=False)   # {"neutral_score": float, "gaze_center": {"x": float, "y": float}, "head_pose": {"pitch": float, "yaw": float, "roll": float}}
     voice_baseline = Column(JSON, default=dict, nullable=False)  # {"average_volume_db": float, "pitch_range_hz": [float, float]}
-    background_noise_level_db = Column(Float, default=-50.0, nullable=False)
+    background_noise_level_db = Column(Float, nullable=True)  # None = not measured
     calibration_text = Column(String(500), nullable=True)
     calibrated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
@@ -307,10 +307,10 @@ class SessionResult(Base):
     is_guest = Column(Boolean, default=False, nullable=False, index=True)
     round_type = Column(String(50), nullable=False)
     role = Column(String(150), nullable=True)
-    overall_score = Column(Float, nullable=False)
-    content_score = Column(Float, nullable=False)
-    speech_score = Column(Float, nullable=False)
-    face_score = Column(Float, nullable=False)
+    overall_score = Column(Float, nullable=True)  # None = not measured
+    content_score = Column(Float, nullable=True)  # None = not measured
+    speech_score = Column(Float, nullable=True)  # None = not measured
+    face_score = Column(Float, nullable=True)  # None = not measured
     classification = Column(String(50), nullable=False)  # STRONG, AVERAGE, WEAK
     weights_used = Column(JSON, nullable=False)
     per_question_scores = Column(JSON, nullable=False)

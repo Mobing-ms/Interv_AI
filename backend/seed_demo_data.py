@@ -42,7 +42,8 @@ from app.services.answer_capture_service import default_storage_manager
 from app.services.improvement_plan_service import build_improvement_plan
 from app.services.report_generator_service import generate_grounded_report_with_recovery
 
-Base.metadata.create_all(bind=engine)
+from run_migrations import run_database_migrations
+run_database_migrations()
 
 
 def seed_demo_candidate(

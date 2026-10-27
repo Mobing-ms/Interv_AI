@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Backgro
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db, SessionLocal
 from app.models import User, CVDocument
 from app.auth import get_current_user
@@ -22,12 +23,7 @@ from app.services.cv_structuring import parse_and_cross_check_cv
 
 router = APIRouter(prefix="/cv", tags=["CV Upload, Extraction & Structuring"])
 
-STORAGE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "storage",
-    "cv_uploads"
-)
-os.makedirs(STORAGE_DIR, exist_ok=True)
+STORAGE_DIR = settings.data_path("storage", "cv_uploads")
 
 
 def sanitize_filename(filename: str) -> str:
@@ -76,7 +72,7 @@ def process_cv_extraction(cv_id: int, file_path: str, file_type: str):
         except Exception as e:
             cv_doc.status = "failed"
             cv_doc.error_code = "UNREADABLE"
-            cv_doc.error_message = f"Extraction failed: {str(e)}"
+            cv_doc.error_message = "Extraction failed: the file could not be read."
             db.commit()
             logger.error("[CV][cv_id=%d][user_id=%d] Unexpected extraction failure: %s", cv_id, user_id, e)
     finally:
@@ -125,10 +121,11 @@ async def upload_cv(
     try:
         with open(file_path, "wb") as f:
             f.write(file_bytes)
-    except Exception as e:
+    except OSError:
+        logger.exception("Could not persist CV upload to storage")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Could not persist file to storage: {str(e)}"
+            detail="Could not persist file to storage."
         )
 
     # Create CVDocument row in DB
@@ -248,10 +245,11 @@ async def parse_cv_document(
 
     try:
         structured_cv, flags = await parse_and_cross_check_cv(cv_doc, db)
-    except Exception as e:
+    except Exception:
+        logger.exception("CV structuring failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"CV structuring failed: {str(e)}"
+            detail="CV structuring failed."
         )
 
     return CVParsedResponse(

@@ -8,18 +8,36 @@ Processes real-time video frames (1 fps) and audio chunks (16 kHz) in parallel w
 
 import os
 import re
-import cv2
 import time
 import math
 import json
 import base64
 import asyncio
+import functools
 import logging
 import numpy as np
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple, Callable
 
-import mediapipe as mp
+
+# opencv / mediapipe are worker-only dependencies (requirements-worker.txt).
+# They are imported lazily so the API starts without them; without them video
+# frames are simply not analysed (metrics reported as not measured).
+_cv2 = None
+_mp = None
+
+
+def _load_cv():
+    global _cv2, _mp
+    if _cv2 is None:
+        try:
+            import cv2 as _c
+            import mediapipe as _m
+            _cv2, _mp = _c, _m
+        except ImportError:
+            logger.warning("opencv/mediapipe not installed: video frames will not be analysed")
+            _cv2, _mp = False, False
+    return _cv2, _mp
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import SignalTimeSeries, SessionCalibration
@@ -168,8 +186,9 @@ class VideoSignalWorker:
     def __init__(self):
         # Initialize MediaPipe FaceMesh with safe fallback
         self._face_mesh = None
+        cv2, mp = _load_cv()
         try:
-            if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
+            if mp and hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
                 self._mp_face_mesh = mp.solutions.face_mesh
                 self._face_mesh = self._mp_face_mesh.FaceMesh(
                     static_image_mode=True,
@@ -196,6 +215,9 @@ class VideoSignalWorker:
             else:
                 return None
 
+            cv2, _ = _load_cv()
+            if not cv2:
+                return None
             nparr = np.frombuffer(raw_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             return img
@@ -230,35 +252,35 @@ class VideoSignalWorker:
         base_head = face_baseline.get("head_pose", {"yaw": 0.0, "pitch": 0.0, "roll": 0.0})
 
         if sim_faces is not None:
-            return self._generate_fallback_metrics(session_id, base_head, base_gaze, face_count=sim_faces)
+            # Explicit face-count input (tests / client-side detector): only presence is known.
+            return self._face_count_only_metrics(sim_faces)
 
         img = self.decode_frame(frame_data)
 
-        # Fallback if image decode or face mesh detection fails on synthetic test chunks or solutions unavailable
+        # Nothing measurable: undecodable frame or MediaPipe unavailable. Report nothing
+        # rather than plausible-looking numbers.
         if img is None or self._face_mesh is None:
-            return self._generate_fallback_metrics(session_id, base_head, base_gaze)
+            if self._face_mesh is None:
+                logger.debug("Video frame not analysed for session #%d: face mesh unavailable", session_id)
+            return {}
 
         h, w, _ = img.shape
+        cv2, _ = _load_cv()
         rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         try:
             results = self._face_mesh.process(rgb_img)
-        except Exception as e:
-            logger.debug("FaceMesh processing exception: %s", e)
-            return self._generate_fallback_metrics(session_id, base_head, base_gaze)
+        except Exception:
+            logger.warning("FaceMesh processing failed for session #%d", session_id, exc_info=True)
+            return {}
 
         if not results or not getattr(results, "multi_face_landmarks", None):
+            # No face: presence and eye contact are measured (zero); pose/expression are not.
             return {
                 "face_present": 0.0,
                 "face_count": 0.0,
                 "second_face_detected": 0.0,
                 "multiple_faces": 0.0,
                 "eye_contact": 0.0,
-                "head_yaw": 0.0,
-                "head_pitch": 0.0,
-                "head_roll": 0.0,
-                "emotion_valence": 0.0,
-                "posture_alignment": 0.8,
-                "movement_level": 0.0,
             }
 
         num_faces = len(results.multi_face_landmarks)
@@ -328,10 +350,10 @@ class VideoSignalWorker:
             displacement = float(np.mean(np.linalg.norm(pts[:, :2] - prev[:, :2], axis=1)))
             movement_level = round(min(1.0, displacement * 25.0), 3)
         else:
-            movement_level = 0.05
+            movement_level = None  # first frame: no previous frame to compare
         self._prev_landmarks[session_id] = pts
 
-        return {
+        out = {
             "face_present": face_present,
             "face_count": face_count,
             "second_face_detected": second_face_detected,
@@ -344,30 +366,22 @@ class VideoSignalWorker:
             "posture_alignment": posture,
             "movement_level": movement_level,
         }
+        return {k: v for k, v in out.items() if v is not None}
 
-    def _generate_fallback_metrics(
-        self,
-        session_id: int,
-        base_head: Dict[str, Any],
-        base_gaze: Dict[str, Any],
-        face_count: float = 1.0,
-    ) -> Dict[str, float]:
-        """Provides baseline-consistent plausible signals when image is simulated."""
+    @staticmethod
+    def _face_count_only_metrics(face_count: float) -> Dict[str, float]:
+        """Only face presence/count is known; every other metric is left unmeasured."""
         face_present = 1.0 if face_count >= 1.0 else 0.0
         second_face = 1.0 if face_count >= 2.0 else 0.0
-        return {
+        out = {
             "face_present": face_present,
             "face_count": face_count,
             "second_face_detected": second_face,
             "multiple_faces": second_face,
-            "eye_contact": 0.92 if face_present else 0.0,
-            "head_yaw": round(base_head.get("yaw", 0.0) + 0.5, 2) if face_present else 0.0,
-            "head_pitch": round(base_head.get("pitch", 0.0) - 0.3, 2) if face_present else 0.0,
-            "head_roll": round(base_head.get("roll", 0.0) + 0.1, 2) if face_present else 0.0,
-            "emotion_valence": 0.15 if face_present else 0.0,
-            "posture_alignment": 0.95 if face_present else 0.8,
-            "movement_level": 0.04 if face_present else 0.0,
         }
+        if not face_present:
+            out["eye_contact"] = 0.0
+        return out
 
 
 # =============================================================================
@@ -416,21 +430,36 @@ class AudioSignalWorker:
         duration: float,
         stt_text: str = "",
         calibration: Optional[Dict[str, Any]] = None,
+        level_db: Optional[float] = None,
+        encoded: bool = False,
     ) -> Dict[str, float]:
         """
         Extracts speech pace, filler rate, pitch dynamics, volume RMS, pauses, and clarity.
         Compares with calibration baseline if available.
+
+        Browser audio arrives compressed (WebM/Opus, `encoded=True`), which cannot be read as PCM:
+        volume and pauses then come from the client-measured `level_db`, and pitch is not measured.
+        A text-only chunk (no audio, no level) only updates the transcript-based metrics.
         """
         st = self._get_session_state(session_id)
         baseline = calibration or {}
         voice_baseline = baseline.get("voice_baseline", {})
         base_vol_db = voice_baseline.get("average_volume_db", -25.0)
-        base_noise_db = baseline.get("background_noise_level_db", -50.0)
+        # Algorithm reference when no noise floor was measured (not reported as a metric).
+        base_noise_db = baseline.get("background_noise_level_db")
+        if base_noise_db is None:
+            base_noise_db = -50.0
         base_pitch_range = voice_baseline.get("pitch_range_hz", [100.0, 220.0])
         base_pitch_mean = sum(base_pitch_range) / 2.0
 
-        # 1. Volume (RMS in dB & amplitude)
-        if audio_bytes and len(audio_bytes) >= 2:
+        has_level = level_db is not None or (bool(audio_bytes) and not encoded)
+        if not has_level:
+            return self._text_metrics(st, stt_text)
+
+        # 1. Volume (RMS in dB & amplitude), on the int16 amplitude scale either way
+        if level_db is not None:
+            rms = float(10 ** (float(level_db) / 20.0) * 32768.0)
+        elif audio_bytes and len(audio_bytes) >= 2:
             try:
                 samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
                 rms = float(np.sqrt(np.mean(samples ** 2))) if len(samples) > 0 else 0.0
@@ -441,7 +470,7 @@ class AudioSignalWorker:
 
         vol_db = round(20 * math.log10(rms + 1e-4), 2)
         st["volumes"].append(rms)
-        vol_variability = round(float(np.std(st["volumes"][-30:])), 2) if len(st["volumes"]) > 2 else 15.0
+        vol_variability = round(float(np.std(st["volumes"][-30:])), 2) if len(st["volumes"]) > 2 else None
 
         # 2. Pause detection
         # Silence defined by low energy compared to baseline noise floor
@@ -462,8 +491,8 @@ class AudioSignalWorker:
         )
 
         # 3. Pitch estimation via autocorrelation
-        pitch_hz = base_pitch_mean
-        if not is_silence and audio_bytes and len(audio_bytes) >= 640:
+        pitch_hz = None
+        if not is_silence and not encoded and audio_bytes and len(audio_bytes) >= 640:
             try:
                 samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
                 # Autocorrelation in human voice range: 80Hz - 350Hz (lag: 45 to 200 samples)
@@ -475,13 +504,35 @@ class AudioSignalWorker:
                     peak_lag = min_lag + int(np.argmax(corr[min_lag:max_lag]))
                     if peak_lag > 0 and corr[peak_lag] > 0.3 * corr[0]:
                         pitch_hz = round(self.sample_rate / peak_lag, 1)
-            except Exception:
-                pitch_hz = base_pitch_mean
+            except (ValueError, FloatingPointError):
+                logger.debug("Pitch estimation failed for session #%d", session_id, exc_info=True)
+                pitch_hz = None
 
-        st["pitches"].append(pitch_hz)
-        pitch_mean = round(float(np.mean(st["pitches"][-20:])), 1)
-        pitch_variance = round(float(np.var(st["pitches"][-20:])), 2) if len(st["pitches"]) > 2 else 25.0
+        if pitch_hz is not None:
+            st["pitches"].append(pitch_hz)
+        pitch_mean = round(float(np.mean(st["pitches"][-20:])), 1) if st["pitches"] else None
+        pitch_variance = round(float(np.var(st["pitches"][-20:])), 2) if len(st["pitches"]) > 2 else None
 
+        text_metrics = self._text_metrics(st, stt_text)
+
+        # 6. Clarity proxy (Voiced energy vs silence ratio)
+        clarity = round(max(0.4, min(1.0, 1.0 - (st["silent_duration"] / max(1.0, st["voiced_duration"] + 1.0)))), 2)
+
+        out = {
+            "volume_rms": round(rms, 1),
+            "volume_variability": vol_variability,
+            "pitch_hz": pitch_mean,
+            "pitch_variance": pitch_variance,
+            "pause_count": float(st["pause_count"]),
+            "avg_pause_length": avg_pause_len,
+            "clarity_proxy": clarity,
+            **text_metrics,
+        }
+        return {k: v for k, v in out.items() if v is not None}
+
+    @staticmethod
+    def _text_metrics(st: Dict[str, Any], stt_text: str) -> Dict[str, float]:
+        """Filler rate and pace from transcript words; unknown (absent) until words arrive."""
         # 4. Filler Word Analysis
         if stt_text:
             text_lower = stt_text.lower()
@@ -490,29 +541,19 @@ class AudioSignalWorker:
             st["total_words"] += len(words)
             st["filler_count"] += fillers_in_chunk
 
-        filler_rate = round(st["filler_count"] / max(1, st["total_words"]), 3)
+        # Without any transcript words, filler metrics are unknown, not zero.
+        filler_rate = round(st["filler_count"] / st["total_words"], 3) if st["total_words"] else None
 
         # 5. Speech Pace (WPM)
         voiced_mins = max(0.01, st["voiced_duration"] / 60.0)
-        pace_wpm = round(st["total_words"] / voiced_mins, 1) if st["total_words"] > 0 else 135.0
-        # Bound pace to plausible conversational limits
-        pace_wpm = max(60.0, min(240.0, pace_wpm))
+        pace_wpm = round(st["total_words"] / voiced_mins, 1) if st["total_words"] > 0 and st["voiced_duration"] > 0 else None
 
-        # 6. Clarity proxy (Voiced energy vs silence ratio)
-        clarity = round(max(0.4, min(1.0, 1.0 - (st["silent_duration"] / max(1.0, st["voiced_duration"] + 1.0)))), 2)
-
-        return {
-            "volume_rms": round(rms, 1),
-            "volume_variability": vol_variability,
-            "pitch_hz": pitch_mean,
-            "pitch_variance": pitch_variance,
+        out = {
             "speech_pace_wpm": pace_wpm,
-            "filler_count": float(st["filler_count"]),
+            "filler_count": float(st["filler_count"]) if st["total_words"] else None,
             "filler_rate": filler_rate,
-            "pause_count": float(st["pause_count"]),
-            "avg_pause_length": avg_pause_len,
-            "clarity_proxy": clarity,
         }
+        return {k: v for k, v in out.items() if v is not None}
 
 
 # =============================================================================
@@ -543,14 +584,23 @@ class ParallelSignalProcessor:
         self._tasks: List[asyncio.Task] = []
 
     def start_workers(self) -> None:
-        """Starts background worker tasks if not already active."""
-        if self._workers_running:
-            return
+        """Starts background worker tasks on the current event loop if not already active there."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-
+        if self._workers_running and getattr(self, "_loop", None) is loop:
+            return
+        if self._workers_running:
+            # Previous loop is gone (e.g. server restarted in-process): queues and
+            # tasks are bound to it, so rebuild them on this loop.
+            logger.info("Signal workers rebinding to a new event loop")
+            for t in self._tasks:
+                t.cancel()
+            self._video_queue = asyncio.Queue(maxsize=self._video_queue.maxsize)
+            self._audio_queue = asyncio.Queue(maxsize=self._audio_queue.maxsize)
+            self.store._lock = asyncio.Lock()
+        self._loop = loop
         self._workers_running = True
         self._tasks = [
             loop.create_task(self._video_worker_loop()),
@@ -607,10 +657,12 @@ class ParallelSignalProcessor:
         duration: float,
         stt_text: str = "",
         calibration: Optional[Dict[str, Any]] = None,
+        level_db: Optional[float] = None,
+        encoded: bool = False,
     ) -> bool:
         """Pushes an audio chunk into worker queue with backpressure."""
         self.start_workers()
-        item = (session_id, question_id, timestamp, audio_bytes, duration, stt_text, calibration)
+        item = (session_id, question_id, timestamp, audio_bytes, duration, stt_text, calibration, level_db, encoded)
         if self._audio_queue.full():
             try:
                 self._audio_queue.get_nowait()
@@ -668,17 +720,15 @@ class ParallelSignalProcessor:
     async def _audio_worker_loop(self) -> None:
         while self._workers_running:
             try:
-                sess_id, q_id, ts, audio_bytes, duration, text, calib = await self._audio_queue.get()
+                sess_id, q_id, ts, audio_bytes, duration, text, calib, level_db, encoded = await self._audio_queue.get()
                 loop = asyncio.get_running_loop()
                 metrics = await loop.run_in_executor(
                     None,
-                    self.audio_worker.process_chunk,
-                    sess_id,
-                    audio_bytes,
-                    ts,
-                    duration,
-                    text,
-                    calib,
+                    functools.partial(
+                        self.audio_worker.process_chunk,
+                        sess_id, audio_bytes, ts, duration, text, calib,
+                        level_db=level_db, encoded=encoded,
+                    ),
                 )
 
                 for metric_name, val in metrics.items():

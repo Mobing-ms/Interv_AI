@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.main import app
 from app.database import Base, engine, SessionLocal
@@ -342,11 +342,11 @@ class TestAnswerCapturePhase4_3(unittest.TestCase):
             f_vack = ws.receive_json()
             self.assertEqual(f_vack["type"], "video_frame_ack")
 
-            # 2. Send 5 speech chunks (1.25s of speech) with partial streaming transcript
+            # 2. Send 14 speech chunks (3.5s of speech, above the 3s minimum) with partial streaming transcript
             dummy_pcm_speech = base64.b64encode(b"\x7f\x00" * 480).decode()
             curr_t = time.time()
 
-            for i in range(5):
+            for i in range(14):
                 ws.send_json({
                     "type": "audio_chunk",
                     "chunk_id": i + 1,
@@ -368,9 +368,8 @@ class TestAnswerCapturePhase4_3(unittest.TestCase):
                     self.assertIn("React", f_trans["text"])
                     self.assertGreater(len(f_trans["words"]), 0)
 
-            # 3. Candidate finishes speaking and remains silent for 2.6s
-            # Send silence chunk at curr_t + 2.6s
-            curr_t += 2.6
+            # 3. Candidate finishes speaking and remains silent past the 6s threshold
+            curr_t += 6.2
             dummy_pcm_silence = base64.b64encode(b"\x00\x00" * 480).decode()
             ws.send_json({
                 "type": "audio_chunk",

@@ -20,7 +20,7 @@ from app.schemas import (
 )
 from app.services.interview_context import load_user_context, MODE_PRESETS
 from app.services.interview_blueprint import build_interview_blueprint
-from app.services.question_generator import generate_question_pool_async
+from app.services.question_pool_store import build_question_pool
 
 router = APIRouter(prefix="/interview", tags=["Interview Setup & Execution"])
 
@@ -308,95 +308,11 @@ async def generate_interview_questions(
             },
         )
 
-    # Fetch context: profile, target, education, user memory
-    canonical_profile = (
-        db.query(Profile)
-        .filter(Profile.user_id == current_user.id)
-        .order_by(Profile.version.desc())
-        .first()
-    )
-    parsed_profile = canonical_profile.structured_data if canonical_profile else None
-    target_prof = db.query(TargetProfile).filter(TargetProfile.user_id == current_user.id).first()
-    edu_prof = db.query(EducationProfile).filter(EducationProfile.user_id == current_user.id).first()
-    user_context = load_user_context(current_user.id, db)
-
-    # Build blueprint
-    blueprint = build_interview_blueprint(
-        profile=parsed_profile,
-        target_profile=target_prof,
-        config=interview,
-        user_context=user_context,
-    )
-
-    # Generate question pool
     multiplier = body.multiplier if body and body.multiplier else 2.5
     similarity_threshold = body.similarity_threshold if body and body.similarity_threshold else 0.82
-
-    gen_result = await generate_question_pool_async(
-        blueprint=blueprint,
-        profile=parsed_profile,
-        target_profile=target_prof,
-        education=edu_prof,
-        user_context=user_context,
-        multiplier=multiplier,
-        similarity_threshold=similarity_threshold,
+    gen_result, blueprint, new_db_items = await build_question_pool(
+        db, interview, current_user.id, multiplier=multiplier, similarity_threshold=similarity_threshold,
     )
-
-    # Clear previous question bank items for this interview if force regenerating
-    if existing_items:
-        db.query(QuestionBankItem).filter(QuestionBankItem.interview_id == id).delete()
-        db.commit()
-
-    now = datetime.now(timezone.utc)
-    new_db_items: List[QuestionBankItem] = []
-
-    for q in gen_result["active_questions"]:
-        item = QuestionBankItem(
-            interview_id=id,
-            question_hash=q["question_hash"],
-            text=q["text"],
-            topic=q["topic"],
-            subtopic=q.get("subtopic"),
-            difficulty=q.get("difficulty", "Medium"),
-            question_type=q.get("question_type", "conceptual"),
-            expected_keywords=q.get("expected_keywords") or [],
-            ideal_answer_points=q.get("ideal_answer_points") or [],
-            max_time_seconds=q.get("max_time_seconds", 120),
-            cv_reference=q.get("cv_reference"),
-            is_weak_area=q.get("is_weak_area", False),
-            rank_score=q.get("rank_score", 0.0),
-            is_reserve_followup=False,
-            followup_templates=q.get("followup_templates") or [],
-            created_at=now,
-        )
-        db.add(item)
-        new_db_items.append(item)
-
-    for q in gen_result["reserve_questions"]:
-        item = QuestionBankItem(
-            interview_id=id,
-            question_hash=q["question_hash"],
-            text=q["text"],
-            topic=q["topic"],
-            subtopic=q.get("subtopic"),
-            difficulty=q.get("difficulty", "Medium"),
-            question_type=q.get("question_type", "conceptual"),
-            expected_keywords=q.get("expected_keywords") or [],
-            ideal_answer_points=q.get("ideal_answer_points") or [],
-            max_time_seconds=q.get("max_time_seconds", 120),
-            cv_reference=q.get("cv_reference"),
-            is_weak_area=q.get("is_weak_area", False),
-            rank_score=q.get("rank_score", 0.0),
-            is_reserve_followup=True,
-            followup_templates=q.get("followup_templates") or [],
-            created_at=now,
-        )
-        db.add(item)
-        new_db_items.append(item)
-
-    db.commit()
-    for item in new_db_items:
-        db.refresh(item)
 
     active_out = [QuestionBankItemOut.model_validate(q) for q in new_db_items if not q.is_reserve_followup]
     reserve_out = [QuestionBankItemOut.model_validate(q) for q in new_db_items if q.is_reserve_followup]

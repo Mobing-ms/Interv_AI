@@ -13,6 +13,7 @@ import json
 import uuid
 import asyncio
 import logging
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -27,6 +28,34 @@ from app.models import (
 )
 from app.services.answer_capture_service import default_storage_manager, AnswerStorageManager
 from app.services.session_state import default_state_store
+
+
+def _avg(by: Dict[str, List[float]], key: str, nd: int) -> Optional[float]:
+    vals = by.get(key)
+    return round(sum(vals) / len(vals), nd) if vals else None
+
+
+def _var(by: Dict[str, List[float]], key: str, nd: int) -> Optional[float]:
+    vals = by.get(key)
+    if not vals or len(vals) < 3:
+        return None
+    m = sum(vals) / len(vals)
+    return round(sum((v - m) ** 2 for v in vals) / len(vals), nd)
+
+
+def _std(by: Dict[str, List[float]], key: str, nd: int) -> Optional[float]:
+    v = _var(by, key, 6)
+    return round(v ** 0.5, nd) if v is not None else None
+
+import threading
+
+
+def _on_event_loop_thread() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
 
 logger = logging.getLogger("intervai.analysis_pipeline")
 
@@ -154,16 +183,20 @@ class AlignmentEngine:
                             ts_points.append({"timestamp": s.timestamp, "metric": s.metric, "value": s.value})
 
                     if by_m:
+                        # Averages only over metrics that were actually measured; a metric
+                        # with no samples is omitted (scoring treats it as "not measured").
                         face_signals = {
-                            "avg_eye_contact": round(sum(by_m.get("eye_contact", [0.9])) / max(1, len(by_m.get("eye_contact", [1]))), 3),
-                            "avg_head_yaw": round(sum(by_m.get("head_yaw", [0.0])) / max(1, len(by_m.get("head_yaw", [1]))), 2),
-                            "avg_head_pitch": round(sum(by_m.get("head_pitch", [0.0])) / max(1, len(by_m.get("head_pitch", [1]))), 2),
-                            "avg_head_roll": round(sum(by_m.get("head_roll", [0.0])) / max(1, len(by_m.get("head_roll", [1]))), 2),
-                            "avg_emotion_valence": round(sum(by_m.get("emotion_valence", [0.1])) / max(1, len(by_m.get("emotion_valence", [1]))), 2),
-                            "avg_posture_alignment": round(sum(by_m.get("posture_alignment", [0.9])) / max(1, len(by_m.get("posture_alignment", [1]))), 3),
-                            "avg_movement_level": round(sum(by_m.get("movement_level", [0.04])) / max(1, len(by_m.get("movement_level", [1]))), 3),
-                            "samples_count": len(ts_points),
+                            "avg_eye_contact": _avg(by_m, "eye_contact", 3),
+                            "avg_head_yaw": _avg(by_m, "head_yaw", 2),
+                            "avg_head_pitch": _avg(by_m, "head_pitch", 2),
+                            "avg_head_roll": _avg(by_m, "head_roll", 2),
+                            "avg_emotion_valence": _avg(by_m, "emotion_valence", 2),
+                            "avg_posture_alignment": _avg(by_m, "posture_alignment", 3),
+                            "avg_movement_level": _avg(by_m, "movement_level", 3),
+                            "face_present_ratio": _avg(by_m, "face_present", 3),
                         }
+                        face_signals = {k: v for k, v in face_signals.items() if v is not None}
+                        face_signals["samples_count"] = len(ts_points)
                     else:
                         q_missing.append("face_signals")
                         face_signals = {"samples_count": 0}
@@ -176,7 +209,7 @@ class AlignmentEngine:
                 try:
                     speech_metric_names = [
                         "volume_rms", "pitch_hz", "speech_pace_wpm", "filler_count",
-                        "filler_rate", "pause_count", "clarity_proxy",
+                        "filler_rate", "pause_count", "avg_pause_length", "clarity_proxy",
                     ]
                     by_sm: Dict[str, List[float]] = {}
                     for s in q_signals:
@@ -185,14 +218,19 @@ class AlignmentEngine:
 
                     if by_sm:
                         speech_signals = {
-                            "avg_speech_pace_wpm": round(sum(by_sm.get("speech_pace_wpm", [130.0])) / max(1, len(by_sm.get("speech_pace_wpm", [1]))), 1),
-                            "total_fillers": int(max(by_sm.get("filler_count", [0]))),
-                            "filler_rate": round(sum(by_sm.get("filler_rate", [0.0])) / max(1, len(by_sm.get("filler_rate", [1]))), 3),
-                            "avg_pitch_hz": round(sum(by_sm.get("pitch_hz", [150.0])) / max(1, len(by_sm.get("pitch_hz", [1]))), 1),
-                            "avg_volume_rms": round(sum(by_sm.get("volume_rms", [400.0])) / max(1, len(by_sm.get("volume_rms", [1]))), 1),
-                            "total_pauses": int(max(by_sm.get("pause_count", [0]))),
-                            "avg_clarity_proxy": round(sum(by_sm.get("clarity_proxy", [0.85])) / max(1, len(by_sm.get("clarity_proxy", [1]))), 2),
+                            "avg_speech_pace_wpm": _avg(by_sm, "speech_pace_wpm", 1),
+                            "total_fillers": int(max(by_sm["filler_count"])) if by_sm.get("filler_count") else None,
+                            "filler_rate": _avg(by_sm, "filler_rate", 3),
+                            "avg_pitch_hz": _avg(by_sm, "pitch_hz", 1),
+                            "pitch_variance": _var(by_sm, "pitch_hz", 2),
+                            "avg_volume_rms": _avg(by_sm, "volume_rms", 1),
+                            "volume_variability": _std(by_sm, "volume_rms", 2),
+                            "total_pauses": int(max(by_sm["pause_count"])) if by_sm.get("pause_count") else None,
+                            "avg_pause_length": _avg(by_sm, "avg_pause_length", 2),
+                            "avg_clarity_proxy": _avg(by_sm, "clarity_proxy", 2),
                         }
+                        speech_signals = {k: v for k, v in speech_signals.items() if v is not None}
+                        speech_signals["samples_count"] = sum(len(v) for v in by_sm.values())
                     else:
                         q_missing.append("speech_signals")
                         speech_signals = {"samples_count": 0}
@@ -226,16 +264,18 @@ class AlignmentEngine:
                     eval_data = ctx_item.get("evaluation") or ctx_item.get("scores")
                     if eval_data:
                         evaluator_scores = eval_data
-                    else:
-                        # Default sensible evaluation structure
+                    elif ctx_item.get("score") is not None:
+                        # Live evaluation stored inline on the session context item
                         evaluator_scores = {
-                            "relevance": ctx_item.get("score", 7.5),
-                            "correctness": ctx_item.get("score", 7.5),
-                            "depth": ctx_item.get("score", 7.0),
-                            "overall_score": ctx_item.get("score", 7.5),
-                            "classification": "OK",
-                            "justification": "Candidate addressed core components of the question.",
+                            k: ctx_item[k]
+                            for k in ("relevance", "correctness", "depth", "classification", "justification",
+                                      "keyword_coverage", "star_completeness", "evaluation_source")
+                            if ctx_item.get(k) is not None
                         }
+                        evaluator_scores["overall_score"] = ctx_item["score"]
+                    else:
+                        # Never evaluated: leave empty so content is reported as not scored.
+                        q_missing.append("evaluator_scores")
                 except Exception as e:
                     logger.warning("Error aligning evaluator scores: %s", e)
                     q_missing.append("evaluator_scores")
@@ -492,19 +532,24 @@ class AnalysisJobManager:
                     e,
                 )
                 if retries <= max_retries:
-                    # Exponential backoff
-                    time.sleep(backoff_delay)
+                    # Exponential backoff. This method always runs on a worker thread
+                    # (executor / background thread / explicit sync call), never on the
+                    # event loop; refuse to sleep if someone calls it from a loop thread.
+                    if _on_event_loop_thread():
+                        logger.error("run_analysis_pipeline_sync called on the event loop; skipping backoff sleep")
+                    else:
+                        time.sleep(backoff_delay)
                     backoff_delay *= 2.0
                 else:
                     # Retries exhausted -> mark failed
-                    logger.error("Analysis job failed permanently for session #%d: %s", session_id, e)
+                    logger.exception("Analysis job failed permanently for session #%d", session_id)
                     return self._update_job(
                         session_id=session_id,
                         job_id=job_id,
                         status="failed",
                         progress=0,
                         current_step="Failed",
-                        error_message=str(e),
+                        error_message="Analysis failed. Please retry later.",
                         completed=True,
                     )
 
@@ -519,7 +564,12 @@ class AnalysisJobManager:
         If a job already exists and is active or completed, returns it directly without duplicating.
         """
         existing = self.get_job_status(session_id)
-        if existing and existing.get("status") in ("processing", "completed", "partial"):
+        # "pending" counts as active only while this process holds the job; a pending row left by
+        # a crashed process can still be re-enqueued.
+        if existing and (
+            existing.get("status") in ("processing", "completed", "partial")
+            or (existing.get("status") == "pending" and session_id in self._memory_jobs)
+        ):
             logger.info("Idempotent check: session #%d analysis job already active/complete.", session_id)
             return existing
 
@@ -546,7 +596,13 @@ class AnalysisJobManager:
                 db_job.current_step = "Queued in analysis pipeline"
                 db_job.error_message = None
                 db_job.started_at = datetime.now(timezone.utc)
-            db.commit()
+            try:
+                db.commit()
+            except IntegrityError:
+                # The live session and POST /finalize can both enqueue when the round ends.
+                db.rollback()
+                logger.info("Analysis job for session #%d was enqueued concurrently; reusing it.", session_id)
+                return self.get_job_status(session_id) or {"session_id": session_id, "status": "pending"}
         finally:
             db.close()
 
@@ -581,12 +637,14 @@ class AnalysisJobManager:
                 simulate_failure_step,
             )
         except RuntimeError:
-            # Fallback if no running loop in thread: run inline
-            self.run_analysis_pipeline_sync(
-                session_id=session_id,
-                job_id=job_id,
-                simulate_failure_step=simulate_failure_step,
-            )
+            # No running loop (called from a sync endpoint or a worker thread): run in a
+            # background thread instead of blocking the caller for the whole pipeline.
+            threading.Thread(
+                target=self.run_analysis_pipeline_sync,
+                args=(session_id, job_id, 3, simulate_failure_step),
+                name=f"analysis-{session_id}",
+                daemon=True,
+            ).start()
 
         return self.get_job_status(session_id)
 

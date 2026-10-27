@@ -94,12 +94,21 @@ def verify_text_in_transcript(claim_concepts: List[str], transcript_text: str, t
 # 2. REPORT WRITER (FIRST PASS)
 # =============================================================================
 
+def _opt(v) -> Optional[float]:
+    """Score value or None when it was not measured."""
+    return None if v is None else float(v)
+
+
+def _fmt(v) -> str:
+    return "not measured" if v is None else f"{float(v):.1f}/100"
+
+
 def generate_initial_report(session_result: Dict[str, Any]) -> Dict[str, Any]:
     """
     Pass 1: Generates candidate evaluation report from structured session result.
     Builds overall summary, strengths, gaps, and per-question feedback.
     """
-    overall_score = float(session_result.get("overall_score", 70.0))
+    overall_score = _opt(session_result.get("overall_score"))
     round_type = session_result.get("round_type", "Technical")
     classification = session_result.get("classification", "AVERAGE")
     role = session_result.get("role", "Software Engineer")
@@ -108,30 +117,35 @@ def generate_initial_report(session_result: Dict[str, Any]) -> Dict[str, Any]:
     comparisons = session_result.get("comparisons", {})
     weights_used = session_result.get("weights_used", {})
 
-    content_score = float(session_result.get("content_score", 70.0))
-    speech_score = float(session_result.get("speech_score", 70.0))
-    face_score = float(session_result.get("face_score", 70.0))
+    content_score = _opt(session_result.get("content_score"))
+    speech_score = _opt(session_result.get("speech_score"))
+    face_score = _opt(session_result.get("face_score"))
 
     # 1. Overall Summary
     trend_summary = comparisons.get("trend", {}).get("summary", "")
     cohort_summary = comparisons.get("cohort", {}).get("benchmark_label", "industry standard cohort")
-    cohort_pctl = comparisons.get("cohort", {}).get("percentile", 50.0)
+    cohort_pctl = comparisons.get("cohort", {}).get("percentile")
 
+    cohort_sentence = (
+        f", placing in the {cohort_pctl:.1f}th percentile of the {cohort_summary}."
+        if cohort_pctl is not None else ". No cohort comparison is available yet."
+    )
     summary_text = (
         f"In this {round_type} interview for {role}, the candidate attained an overall composite score of "
-        f"{overall_score:.1f}/100, receiving a performance classification of {classification}. "
+        f"{_fmt(overall_score)}, receiving a performance classification of {classification}. "
         f"The evaluation applied {round_type.lower()}-aligned weighting (Content: {int(weights_used.get('content', 0.5)*100)}%, "
-        f"Speech: {int(weights_used.get('speech', 0.3)*100)}%, Face: {int(weights_used.get('face', 0.2)*100)}%). "
-        f"Candidate scored {content_score:.1f} in content technical accuracy, {speech_score:.1f} in speech confidence, "
-        f"and {face_score:.1f} in facial presence, placing in the {cohort_pctl:.1f}th percentile of the {cohort_summary}."
+        f"Speech: {int(weights_used.get('speech', 0.3)*100)}%, Face: {int(weights_used.get('face', 0.2)*100)}%), "
+        f"excluding any component that was not measured. "
+        f"Candidate scored {_fmt(content_score)} in content technical accuracy, {_fmt(speech_score)} in speech confidence, "
+        f"and {_fmt(face_score)} in facial presence" + cohort_sentence
     )
 
     # 2. Strengths
     strengths: List[Dict[str, Any]] = []
     # Identify top scoring questions
-    sorted_q_by_score = sorted(questions, key=lambda q: q.get("fused_score", 0.0), reverse=True)
+    sorted_q_by_score = sorted(questions, key=lambda q: q.get("fused_score") or 0.0, reverse=True)
     for q in sorted_q_by_score:
-        if q.get("fused_score", 0.0) >= 75.0 and len(strengths) < 3:
+        if (q.get("fused_score") or 0.0) >= 75.0 and len(strengths) < 3:
             topic = q.get("topic", "General")
             q_id = q.get("question_id", 1)
             transcript = q.get("transcript", "")
@@ -143,7 +157,7 @@ def generate_initial_report(session_result: Dict[str, Any]) -> Dict[str, Any]:
                 "question_id": q_id,
             })
 
-    if speech_score >= 80.0:
+    if speech_score is not None and speech_score >= 80.0:
         strengths.append({
             "title": "Articulate Speech Delivery",
             "claim": f"Maintained articulate speaking cadence with speech confidence score of {speech_score:.1f}/100.",
@@ -153,7 +167,7 @@ def generate_initial_report(session_result: Dict[str, Any]) -> Dict[str, Any]:
     if not strengths:
         strengths.append({
             "title": "Interview Engagement",
-            "claim": f"Attempted all presented questions in {round_type} interview with overall score of {overall_score:.1f}/100.",
+            "claim": f"Attempted all presented questions in {round_type} interview with overall score of {_fmt(overall_score)}.",
             "evidence_topic": round_type,
             "question_id": 1,
         })
@@ -185,12 +199,12 @@ def generate_initial_report(session_result: Dict[str, Any]) -> Dict[str, Any]:
         q_id = q.get("question_id", 1)
         topic = q.get("topic", "General")
         q_text = q.get("question_text", f"Question #{q_id}")
-        q_score = float(q.get("fused_score", 70.0))
+        q_score = _opt(q.get("fused_score"))
         transcript = q.get("transcript", "")
         deductions = q.get("all_deductions", [])
 
         # What was good
-        if q_score >= 80.0:
+        if q_score is not None and q_score >= 80.0:
             what_good = f"Strong command of {topic}. Answer covered key core concepts with clarity."
         elif transcript:
             what_good = f"Addressed core question on {topic} directly."
@@ -247,10 +261,10 @@ class GroundingVerifier:
     def __init__(self, ground_truth: Dict[str, Any]):
         self.gt = ground_truth
         self.transcripts: Dict[int, str] = ground_truth.get("transcripts", {})
-        self.overall_score: float = float(ground_truth.get("overall_score", 70.0))
-        self.content_score: float = float(ground_truth.get("content_score", 70.0))
-        self.speech_score: float = float(ground_truth.get("speech_score", 70.0))
-        self.face_score: float = float(ground_truth.get("face_score", 70.0))
+        self.overall_score: float = _opt(ground_truth.get("overall_score"))
+        self.content_score: float = _opt(ground_truth.get("content_score"))
+        self.speech_score: float = _opt(ground_truth.get("speech_score"))
+        self.face_score: float = _opt(ground_truth.get("face_score"))
         self.classification: str = str(ground_truth.get("classification", "AVERAGE")).upper()
         self.per_q_scores: Dict[int, float] = ground_truth.get("per_q_scores", {})
         self.topics: Dict[int, str] = ground_truth.get("topics", {})
@@ -271,7 +285,7 @@ class GroundingVerifier:
         for num_str in score_numbers:
             val = float(num_str)
             # Must be within tolerance of overall, content, speech, or face score
-            valid_scores = [self.overall_score, self.content_score, self.speech_score, self.face_score]
+            valid_scores = [v for v in (self.overall_score, self.content_score, self.speech_score, self.face_score) if v is not None]
             matches = any(abs(val - s) <= 1.5 for s in valid_scores)
             if not matches and val not in (0.0, 100.0, 50.0):
                 flagged_claims.append({
@@ -287,7 +301,9 @@ class GroundingVerifier:
                 })
 
         # Check classification contradiction in summary
-        if "STRONG" in summary.upper() and self.overall_score < 60.0:
+        if self.overall_score is None:
+            pass
+        elif "STRONG" in summary.upper() and self.overall_score < 60.0:
             flagged_claims.append({
                 "section": "overall_summary",
                 "claim_text": "Claims STRONG classification",
@@ -312,12 +328,14 @@ class GroundingVerifier:
             if score_match:
                 s_val = float(score_match.group(1))
                 actual_s = self.per_q_scores.get(q_id, self.overall_score)
-                if abs(s_val - actual_s) > 2.0 and abs(s_val - self.speech_score) > 2.0:
+                close_to_q = actual_s is not None and abs(s_val - actual_s) <= 2.0
+                close_to_speech = self.speech_score is not None and abs(s_val - self.speech_score) <= 2.0
+                if not close_to_q and not close_to_speech:
                     flagged_claims.append({
                         "section": "strengths",
                         "claim_index": idx,
                         "claim_text": claim,
-                        "reason": f"Score claim of {s_val}/100 contradicts actual question #{q_id} score ({actual_s:.1f}/100).",
+                        "reason": f"Score claim of {s_val}/100 contradicts actual question #{q_id} score ({_fmt(actual_s)}).",
                     })
                     continue
 
@@ -400,7 +418,7 @@ def regenerate_flagged_section(
     Regenerates only the specific section that had an unsupported or contradictory claim,
     strictly constraining the revised output to verified ground truth evidence.
     """
-    overall_score = float(ground_truth.get("overall_score", 70.0))
+    overall_score = _opt(ground_truth.get("overall_score"))
     transcripts = ground_truth.get("transcripts", {})
     per_q_scores = ground_truth.get("per_q_scores", {})
     topics = ground_truth.get("topics", {})
@@ -409,7 +427,7 @@ def regenerate_flagged_section(
         classification = ground_truth.get("classification", "AVERAGE")
         round_type = ground_truth.get("round_type", "Technical")
         report["overall_summary"] = (
-            f"Candidate completed the {round_type} interview with an overall score of {overall_score:.1f}/100 "
+            f"Candidate completed the {round_type} interview with an overall score of {_fmt(overall_score)} "
             f"({classification}). Performance was evaluated across technical depth, speech confidence, "
             f"and camera composure."
         )
@@ -429,7 +447,7 @@ def regenerate_flagged_section(
         if not new_strengths:
             new_strengths.append({
                 "title": "Interview Completion",
-                "claim": f"Completed all interview questions with composite score of {overall_score:.1f}/100.",
+                "claim": f"Completed all interview questions with composite score of {_fmt(overall_score)}.",
                 "evidence_topic": "Engagement",
                 "question_id": 1,
             })
@@ -467,14 +485,14 @@ def generate_grounded_report_with_recovery(
     for q in session_result.get("per_question_scores", []):
         q_id = q.get("question_id", 1)
         transcripts[q_id] = q.get("transcript", "")
-        per_q_scores[q_id] = float(q.get("fused_score", 70.0))
+        per_q_scores[q_id] = _opt(q.get("fused_score"))
         topics[q_id] = q.get("topic", "General")
 
     ground_truth = {
-        "overall_score": float(session_result.get("overall_score", 70.0)),
-        "content_score": float(session_result.get("content_score", 70.0)),
-        "speech_score": float(session_result.get("speech_score", 70.0)),
-        "face_score": float(session_result.get("face_score", 70.0)),
+        "overall_score": _opt(session_result.get("overall_score")),
+        "content_score": _opt(session_result.get("content_score")),
+        "speech_score": _opt(session_result.get("speech_score")),
+        "face_score": _opt(session_result.get("face_score")),
         "classification": session_result.get("classification", "AVERAGE"),
         "round_type": session_result.get("round_type", "Technical"),
         "transcripts": transcripts,

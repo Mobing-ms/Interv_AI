@@ -12,7 +12,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response, JSONResponse
 
 from app.config import settings
-from app.database import engine, Base
+from app.database import engine
 import app.models  # Register all models
 from app.routers.auth import router as auth_router, limiter
 from app.routers.profile import router as profile_router
@@ -74,6 +74,14 @@ if settings.ENV == "production" and not root_logger.handlers:
     handler.setFormatter(StructuredJsonFormatter())
     root_logger.addHandler(handler)
     root_logger.setLevel(logging.INFO)
+elif not root_logger.handlers:
+    # Development: readable lines for the app's own loggers (interview flow, grading, STT)
+    dev_handler = logging.StreamHandler()
+    dev_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S"))
+    app_logger = logging.getLogger("intervai")
+    app_logger.addHandler(dev_handler)
+    app_logger.setLevel(logging.INFO)
+    app_logger.propagate = False
 
 
 # =============================================================================
@@ -82,26 +90,13 @@ if settings.ENV == "production" and not root_logger.handlers:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ensure tables are created
-    Base.metadata.create_all(bind=engine)
-    # Ensure schema migrations for existing SQLite databases
-    with engine.connect() as conn:
-        for col_query in [
-            "ALTER TABLE users ADD COLUMN onboarding_status VARCHAR(50) DEFAULT 'not_started'",
-            "ALTER TABLE interview_configs ADD COLUMN is_guest BOOLEAN DEFAULT 0",
-            "ALTER TABLE interview_sessions ADD COLUMN is_guest BOOLEAN DEFAULT 0",
-            "ALTER TABLE interview_sessions ADD COLUMN guest_id VARCHAR(100)",
-            "ALTER TABLE user_consents ADD COLUMN is_guest BOOLEAN DEFAULT 0",
-            "ALTER TABLE user_consents ADD COLUMN guest_id VARCHAR(100)",
-            "ALTER TABLE session_results ADD COLUMN is_guest BOOLEAN DEFAULT 0",
-            "ALTER TABLE session_reports ADD COLUMN is_guest BOOLEAN DEFAULT 0",
-            "ALTER TABLE cv_documents ADD COLUMN is_guest BOOLEAN DEFAULT 0",
-        ]:
-            try:
-                conn.execute(text(col_query))
-                conn.commit()
-            except Exception:
-                pass  # column already exists or table freshly created
+    # Schema is owned by Alembic only (no create_all, no ad-hoc ALTERs).
+    # Production runs `python run_migrations.py` as a deploy step; local dev
+    # auto-upgrades unless AUTO_MIGRATE=false.
+    if settings.auto_migrate_enabled:
+        import asyncio
+        from run_migrations import run_database_migrations
+        await asyncio.to_thread(run_database_migrations)
     yield
 
 
@@ -213,9 +208,10 @@ def health_check():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         health["checks"]["database"] = {"status": "ok", "dialect": engine.dialect.name}
-    except Exception as db_err:
+    except Exception:
+        logging.getLogger("intervai.health").exception("Database health check failed")
         health["status"] = "degraded"
-        health["checks"]["database"] = {"status": "error", "message": str(db_err)}
+        health["checks"]["database"] = {"status": "error"}
 
     # 2. Cache / State Store Check
     try:
@@ -227,8 +223,9 @@ def health_check():
             "status": "ok",
             "mode": "redis" if is_redis else "in_memory_fallback",
         }
-    except Exception as redis_err:
-        health["checks"]["cache_state"] = {"status": "warning", "message": str(redis_err)}
+    except Exception:
+        logging.getLogger("intervai.health").exception("State store health check failed")
+        health["checks"]["cache_state"] = {"status": "warning"}
 
     # 3. Storage Backend Check
     try:
@@ -237,13 +234,18 @@ def health_check():
             "status": "ok",
             "backend": "s3" if isinstance(default_storage_provider, S3StorageProvider) else "local",
         }
-    except Exception as storage_err:
-        health["checks"]["storage"] = {"status": "warning", "message": str(storage_err)}
+    except Exception:
+        logging.getLogger("intervai.health").exception("Storage health check failed")
+        health["checks"]["storage"] = {"status": "warning"}
 
     # 4. Speech-to-Text Provider Check
     health["checks"]["stt_provider"] = {
-        "status": "ok",
+        "status": "mock" if settings.STT_PROVIDER.lower() == "mock" else "ok",
         "provider": settings.STT_PROVIDER,
+    }
+    health["checks"]["llm_provider"] = {
+        "status": "mock" if settings.LLM_PROVIDER.lower() == "mock" else "ok",
+        "provider": settings.LLM_PROVIDER,
     }
 
     status_code = status.HTTP_200_OK if health["status"] == "healthy" else status.HTTP_503_SERVICE_UNAVAILABLE

@@ -29,7 +29,7 @@ from app.models import (
     InterviewSession,
     SessionCalibration,
 )
-from app.auth import get_current_user, get_current_user_or_guest, AuthContext
+from app.auth import get_current_user, get_current_user_or_guest, AuthContext, authenticate_ws_session, require_maintenance_token
 from app.schemas import (
     ConsentCreate,
     ConsentOut,
@@ -174,7 +174,10 @@ def get_tts_audio(cache_key: str):
 
 
 @router.post("/tts/synthesize")
-def synthesize_tts(payload: Dict[str, Any]):
+def synthesize_tts(
+    payload: Dict[str, Any],
+    auth_ctx: AuthContext = Depends(get_current_user_or_guest),
+):
     """
     Synthesizes speech audio for a text phrase, returns audio URL and cache status.
     """
@@ -184,6 +187,8 @@ def synthesize_tts(payload: Dict[str, Any]):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Text parameter is required for TTS synthesis.",
         )
+    if len(text) > 2000:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Text too long for TTS synthesis.")
     language = payload.get("language", "English")
     voice_style = payload.get("voice_style", "neutral")
     return default_tts_service.synthesize_speech(text, language=language, voice_style=voice_style)
@@ -198,10 +203,11 @@ def _build_ws_url(request: Request, session_id: int, token: str) -> str:
     Constructs the WebSocket URL based on request scheme and host.
     Ensures wss:// is used when running over HTTPS or behind TLS reverse proxies.
     """
-    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    trust = settings.TRUST_PROXY_HEADERS
+    proto = (trust and request.headers.get("x-forwarded-proto")) or request.url.scheme
     scheme = "wss" if proto == "https" else "ws"
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host", "127.0.0.1:8000")
-    return f"{scheme}://{host}/session/{session_id}/stream?token={token}"
+    host = (trust and request.headers.get("x-forwarded-host")) or request.headers.get("host", "127.0.0.1:8000")
+    return f"{scheme}://{host}/session/{session_id}/live?token={token}&autostart=false"
 
 
 @router.post("", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
@@ -469,7 +475,7 @@ def _resolve_session(id: int, auth_ctx: AuthContext, db: Session) -> InterviewSe
     - Guests can access only their own session matching guest token (session.is_guest and session.id == guest_session_id)
     """
     if auth_ctx.is_guest:
-        if auth_ctx.guest_session_id is not None and auth_ctx.guest_session_id != id:
+        if auth_ctx.guest_session_id != id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Guest token does not permit access to this interview session.",
@@ -549,25 +555,10 @@ def record_session_calibration(
     """
     session = _resolve_session(id, auth_ctx, db)
 
-    # Defaults for face baseline if partial or empty
-    face_data = body.face_baseline or {
-        "neutral_score": 0.94,
-        "gaze_center": {"x": 0.5, "y": 0.5},
-        "head_pose": {"pitch": 0.0, "yaw": 0.0, "roll": 0.0},
-    }
-
-    # Defaults for voice baseline if partial or empty
-    voice_data = body.voice_baseline or {
-        "average_volume_db": -24.0,
-        "pitch_range_hz": [110.0, 220.0],
-        "speaking_rate_wpm": 130.0,
-    }
-
-    noise_db = (
-        body.background_noise_level_db
-        if body.background_noise_level_db is not None
-        else -50.0
-    )
+    # Store only what the client actually measured; absent baselines stay empty/null.
+    face_data = body.face_baseline or {}
+    voice_data = body.voice_baseline or {}
+    noise_db = body.background_noise_level_db
 
     now = datetime.now(timezone.utc)
 
@@ -661,222 +652,122 @@ def get_session_state(
 
 
 @router.websocket("/{id}/live")
-@router.websocket("/{id}/orchestrate")
-async def session_live_orchestrator_websocket(
+async def session_live_websocket(
     websocket: WebSocket,
     id: int,
     token: Optional[str] = Query(None),
+    autostart: bool = Query(True),
 ):
     """
-    Core Phase 4 Interview Session Orchestrator WebSocket endpoint.
-    Drives state machine (GREETING -> WARMUP -> ASKING -> LISTENING ->
-    EVALUATING -> ROUTING -> CLOSING -> ENDED) with Redis persistence and reconnection recovery.
+    The single live-interview WebSocket. Protocol: backend/WS_PROTOCOL.md.
+
+    autostart=true  (default): the interview state machine starts immediately.
+    autostart=false: pre-check mode; only ping/media_chunk/calibration_event are
+                     acknowledged until the client sends any other message, which
+                     starts the interview and is then handled normally.
     """
-    db = SessionLocal()
-    session = None
-    try:
-        logger.info("[WS ORCHESTRATOR] Incoming connection for session #%d with token: %s...", id, (token[:10] if token else "NONE"))
-        if not token:
-            logger.warning("[WS ORCHESTRATOR] Rejected connection for session #%d: Missing session token", id)
-            await websocket.close(code=1008, reason="Missing session token")
-            return
+    await _serve_session_ws(websocket, id, token, autostart)
 
-        # 1. Match against session_token directly
-        session = (
-            db.query(InterviewSession)
-            .filter(InterviewSession.id == id, InterviewSession.session_token == token)
-            .first()
-        )
 
-        # 2. Match against candidate user JWT
-        if not session:
-            try:
-                from app.auth import decode_token
-                payload = decode_token(token)
-                sub = payload.get("sub")
-                if sub:
-                    session = (
-                        db.query(InterviewSession)
-                        .filter(InterviewSession.id == id, InterviewSession.user_id == int(sub))
-                        .first()
-                    )
-            except Exception:
-                pass
-
-        # 3. Match against guest access JWT
-        if not session:
-            try:
-                from app.auth import decode_guest_token
-                g_payload = decode_guest_token(token)
-                g_sess_id = g_payload.get("session_id")
-                if g_sess_id == id:
-                    session = (
-                        db.query(InterviewSession)
-                        .filter(InterviewSession.id == id)
-                        .first()
-                    )
-            except Exception:
-                pass
-
-        # 4. Fallback: match by session id if valid session exists
-        if not session:
-            candidate_session = db.query(InterviewSession).filter(InterviewSession.id == id).first()
-            if candidate_session and (candidate_session.session_token == token or token == "demo" or len(token) > 20):
-                session = candidate_session
-
-        if not session:
-            logger.warning("[WS ORCHESTRATOR] Authentication failed for session #%d: Invalid session token", id)
-            await websocket.close(code=1008, reason="Invalid session token")
-            return
-
-        await websocket.accept()
-        logger.info("[WS ORCHESTRATOR] Accepted connection for session #%d (user_id=%s)", id, session.user_id)
-
-        session.status = "active"
-        db.commit()
-        user_id = session.user_id
-        db.close()
-        db = None
-
-        orchestrator = SessionOrchestrator(session_id=id, user_id=user_id)
-        await orchestrator.start(websocket)
-
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        try:
-            await websocket.send_json({"type": "error", "detail": str(e)})
-        except Exception:
-            pass
-    finally:
-        if db:
-            db.close()
+@router.websocket("/{id}/orchestrate")
+async def session_orchestrate_websocket_alias(websocket: WebSocket, id: int, token: Optional[str] = Query(None)):
+    """Deprecated alias for /{id}/live."""
+    await _serve_session_ws(websocket, id, token, autostart=True)
 
 
 @router.websocket("/{id}/stream")
-async def session_stream_websocket(
+async def session_stream_websocket_alias(
     websocket: WebSocket,
     id: int,
     token: Optional[str] = Query(None),
     orchestrate: bool = Query(False),
 ):
-    """
-    WebSocket endpoint for real-time media chunk streaming (MediaRecorder chunks)
-    and session control messages.
-    If orchestrate=true, delegates to the full Phase 4 SessionOrchestrator state machine.
-    Authenticates via ?token= query parameter.
-    """
+    """Deprecated alias for /{id}/live?autostart=false (or autostart=true with ?orchestrate=true)."""
+    await _serve_session_ws(websocket, id, token, autostart=orchestrate)
+
+
+_PRECHECK_TYPES = ("ping", "media_chunk", "calibration_event")
+
+
+async def _serve_session_ws(websocket: WebSocket, id: int, token: Optional[str], autostart: bool) -> None:
+    import json
+
     db = SessionLocal()
-    session = None
     try:
-        if not token:
-            await websocket.close(code=1008, reason="Missing session token")
-            return
-
-        session = (
-            db.query(InterviewSession)
-            .filter(InterviewSession.id == id, InterviewSession.session_token == token)
-            .first()
-        )
+        session = authenticate_ws_session(db, id, token)
         if not session:
-            await websocket.close(code=1008, reason="Invalid session token")
+            logger.warning("[WS] Rejected connection for session #%d: invalid or missing credentials", id)
+            await websocket.close(code=1008, reason="Unauthorized")
             return
-
         await websocket.accept()
-
-        # Update session status to active on connection
         session.status = "active"
         db.commit()
+        user_id = session.user_id
+    finally:
+        db.close()
 
-        # If full orchestrator requested on stream endpoint, delegate to SessionOrchestrator
-        if orchestrate:
-            user_id = session.user_id
-            db.close()
-            db = None
-            orchestrator = SessionOrchestrator(session_id=id, user_id=user_id)
-            await orchestrator.start(websocket)
-            return
-
-        # Send greeting / connection established frame for Phase 3 stream compatibility
-        await websocket.send_json({
-            "type": "connected",
-            "session_id": id,
-            "status": "active",
-            "message": "IntervAI live stream connection established.",
-            "timestamp": time.time(),
-        })
-
-        chunk_counter = 0
-
-        while True:
-            # Receive text or binary message
-            message = await websocket.receive()
-
-            if "text" in message and message["text"]:
-                try:
-                    import json
-                    data = json.loads(message["text"])
-                    msg_type = data.get("type", "unknown")
-
-                    if msg_type == "ping":
-                        await websocket.send_json({
-                            "type": "pong",
-                            "timestamp": time.time(),
-                        })
-
-                    elif msg_type == "media_chunk":
-                        chunk_counter += 1
-                        chunk_id = data.get("chunk_id", chunk_counter)
-                        payload_size = len(data.get("data", ""))
-                        await websocket.send_json({
-                            "type": "chunk_ack",
-                            "chunk_id": chunk_id,
-                            "size": payload_size,
-                            "received_at": time.time(),
-                        })
-
-                    elif msg_type == "calibration_event":
-                        await websocket.send_json({
-                            "type": "calibration_ack",
-                            "timestamp": time.time(),
-                        })
-
-                    elif msg_type in ("start_interview", "heartbeat", "answer_started"):
-                        # Dynamic transition to orchestrator if client issues orchestrator command
-                        orchestrator = SessionOrchestrator(session_id=id, user_id=session.user_id)
-                        await orchestrator.start(websocket)
-                        return
-
-                    else:
-                        await websocket.send_json({
-                            "type": "ack",
-                            "original_type": msg_type,
-                            "timestamp": time.time(),
-                        })
-
-                except Exception:
+    logger.info("[WS] Accepted connection for session #%d (autostart=%s)", id, autostart)
+    try:
+        first_message = None
+        if not autostart:
+            await websocket.send_json({
+                "type": "connected",
+                "session_id": id,
+                "status": "active",
+                "state": "PRECHECK",
+                "message": "IntervAI live stream connection established.",
+                "timestamp": time.time(),
+            })
+            chunk_counter = 0
+            while first_message is None:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    return
+                if message.get("bytes"):
+                    chunk_counter += 1
                     await websocket.send_json({
-                        "type": "error",
-                        "detail": "Failed to parse JSON text frame",
+                        "type": "binary_chunk_ack",
+                        "session_id": id,
+                        "chunk_id": chunk_counter,
+                        "size": len(message["bytes"]),
+                        "received_at": time.time(),
                     })
+                    continue
+                if not message.get("text"):
+                    continue
+                try:
+                    data = json.loads(message["text"])
+                except json.JSONDecodeError:
+                    await websocket.send_json({"type": "error", "session_id": id, "code": "invalid_json", "detail": "Invalid JSON frame format"})
+                    continue
+                msg_type = data.get("type")
+                if msg_type == "ping":
+                    await websocket.send_json({"type": "pong", "session_id": id, "timestamp": time.time()})
+                elif msg_type == "media_chunk":
+                    chunk_counter += 1
+                    await websocket.send_json({
+                        "type": "chunk_ack",
+                        "session_id": id,
+                        "chunk_id": data.get("chunk_id", chunk_counter),
+                        "size": len(data.get("data", "") or ""),
+                        "received_at": time.time(),
+                    })
+                elif msg_type == "calibration_event":
+                    await websocket.send_json({"type": "calibration_ack", "session_id": id, "timestamp": time.time()})
+                else:
+                    first_message = data
 
-            elif "bytes" in message and message["bytes"]:
-                chunk_counter += 1
-                raw_bytes = message["bytes"]
-                await websocket.send_json({
-                    "type": "binary_chunk_ack",
-                    "chunk_id": chunk_counter,
-                    "size": len(raw_bytes),
-                    "received_at": time.time(),
-                })
+        orchestrator = SessionOrchestrator(session_id=id, user_id=user_id)
+        await orchestrator.start(websocket, first_message=first_message)
 
     except WebSocketDisconnect:
-        pass
+        logger.info("[WS] Client disconnected from session #%d", id)
     except Exception:
-        pass
-    finally:
-        if db:
-            db.close()
+        logger.exception("[WS] Unhandled error in live session #%d", id)
+        try:
+            await websocket.send_json({"type": "error", "session_id": id, "code": "internal_error", "detail": "Internal server error"})
+        except Exception:
+            logger.debug("[WS] Could not deliver error frame for session #%d", id)
 
 
 @router.get("/{id}/question/{question_id}/artifacts")
@@ -911,9 +802,9 @@ def get_question_signals(
     # 1. Fetch calibration record
     cal_rec = db.query(SessionCalibration).filter(SessionCalibration.session_id == id).first()
     calibration_baseline = {
-        "face_baseline": cal_rec.face_baseline if cal_rec else {},
-        "voice_baseline": cal_rec.voice_baseline if cal_rec else {},
-        "background_noise_level_db": cal_rec.background_noise_level_db if cal_rec else -50.0,
+        "face_baseline": (cal_rec.face_baseline or {}) if cal_rec else {},
+        "voice_baseline": (cal_rec.voice_baseline or {}) if cal_rec else {},
+        "background_noise_level_db": cal_rec.background_noise_level_db if cal_rec else None,
     }
 
     # 2. Retrieve signals from store (in-memory cache or DB)
@@ -928,46 +819,54 @@ def get_question_signals(
             by_metric[m] = []
         by_metric[m].append(s["value"])
 
-    def _mean(metric_name: str, default: float = 0.0) -> float:
+    # Unmeasured metrics are reported as null, never as plausible defaults.
+    def _mean(metric_name: str) -> Optional[float]:
         vals = by_metric.get(metric_name, [])
-        return round(float(sum(vals) / len(vals)), 3) if vals else default
+        return round(float(sum(vals) / len(vals)), 3) if vals else None
 
-    def _max(metric_name: str, default: float = 0.0) -> float:
+    def _max(metric_name: str) -> Optional[float]:
         vals = by_metric.get(metric_name, [])
-        return round(float(max(vals)), 3) if vals else default
+        return round(float(max(vals)), 3) if vals else None
+
+    def _maxint(metric_name: str) -> Optional[int]:
+        v = _max(metric_name)
+        return int(v) if v is not None else None
+
+    def _delta(a: Optional[float], b: Optional[float]) -> Optional[float]:
+        return round(a - b, 2) if a is not None and b is not None else None
 
     # Face summary
     face_summary = {
-        "face_present_ratio": _mean("face_present", 1.0),
-        "avg_eye_contact": _mean("eye_contact", 0.90),
-        "avg_head_yaw": _mean("head_yaw", 0.0),
-        "avg_head_pitch": _mean("head_pitch", 0.0),
-        "avg_head_roll": _mean("head_roll", 0.0),
-        "avg_emotion_valence": _mean("emotion_valence", 0.1),
-        "avg_posture_alignment": _mean("posture_alignment", 0.95),
-        "avg_movement_level": _mean("movement_level", 0.05),
+        "face_present_ratio": _mean("face_present"),
+        "avg_eye_contact": _mean("eye_contact"),
+        "avg_head_yaw": _mean("head_yaw"),
+        "avg_head_pitch": _mean("head_pitch"),
+        "avg_head_roll": _mean("head_roll"),
+        "avg_emotion_valence": _mean("emotion_valence"),
+        "avg_posture_alignment": _mean("posture_alignment"),
+        "avg_movement_level": _mean("movement_level"),
     }
 
     # Speech summary
     speech_summary = {
-        "avg_speech_pace_wpm": _mean("speech_pace_wpm", 135.0),
-        "total_filler_words": int(_max("filler_count", 0)),
-        "avg_filler_rate": _mean("filler_rate", 0.0),
-        "avg_pitch_hz": _mean("pitch_hz", 150.0),
-        "pitch_variance": _mean("pitch_variance", 25.0),
-        "avg_volume_rms": _mean("volume_rms", 400.0),
-        "volume_variability": _mean("volume_variability", 20.0),
-        "total_pause_count": int(_max("pause_count", 0)),
-        "avg_pause_length_sec": _mean("avg_pause_length", 0.0),
-        "avg_clarity_proxy": _mean("clarity_proxy", 0.88),
+        "avg_speech_pace_wpm": _mean("speech_pace_wpm"),
+        "total_filler_words": _maxint("filler_count"),
+        "avg_filler_rate": _mean("filler_rate"),
+        "avg_pitch_hz": _mean("pitch_hz"),
+        "pitch_variance": _mean("pitch_variance"),
+        "avg_volume_rms": _mean("volume_rms"),
+        "volume_variability": _mean("volume_variability"),
+        "total_pause_count": _maxint("pause_count"),
+        "avg_pause_length_sec": _mean("avg_pause_length"),
+        "avg_clarity_proxy": _mean("clarity_proxy"),
     }
 
     # Comparison vs Calibration Baseline
     baseline_face = calibration_baseline.get("face_baseline", {})
     comparison = {
-        "head_yaw_delta_from_baseline": round(face_summary["avg_head_yaw"] - baseline_face.get("head_pose", {}).get("yaw", 0.0), 2),
-        "head_pitch_delta_from_baseline": round(face_summary["avg_head_pitch"] - baseline_face.get("head_pose", {}).get("pitch", 0.0), 2),
-        "voice_volume_above_noise_db": round(speech_summary["avg_volume_rms"] - max(1.0, calibration_baseline.get("background_noise_level_db", -50.0)), 2),
+        "head_yaw_delta_from_baseline": _delta(face_summary["avg_head_yaw"], (baseline_face.get("head_pose") or {}).get("yaw")),
+        "head_pitch_delta_from_baseline": _delta(face_summary["avg_head_pitch"], (baseline_face.get("head_pose") or {}).get("pitch")),
+        "voice_volume_above_noise_db": _delta(speech_summary["avg_volume_rms"], calibration_baseline.get("background_noise_level_db")),
         "eye_contact_relative_to_baseline": face_summary["avg_eye_contact"],
     }
 
@@ -1250,10 +1149,11 @@ def get_session_pdf(
                 "Content-Type": "application/pdf",
             },
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("PDF generation failed for session #%d", id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate PDF report: {str(e)}",
+            detail="Failed to generate PDF report.",
         )
 
 
@@ -1354,6 +1254,7 @@ def get_signed_recording_file(
 
 @router.post("/maintenance/cleanup-retention")
 def trigger_retention_cleanup(
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
@@ -1361,6 +1262,7 @@ def trigger_retention_cleanup(
     - Purges guest recordings older than 24 hours.
     - Purges user recording media blobs older than 30 days.
     """
+    require_maintenance_token(request)
     from app.services.retention_service import cleanup_all_expired_recordings
     result = cleanup_all_expired_recordings(db)
     return {"status": "ok", "cleanup_summary": result}

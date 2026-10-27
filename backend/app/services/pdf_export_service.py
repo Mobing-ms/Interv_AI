@@ -123,6 +123,14 @@ class NumberedCanvas(canvas.Canvas):
 # 3. MATPLOTLIB CHART GENERATION HELPERS
 # =============================================================================
 
+def _opt(v) -> Optional[float]:
+    return None if v is None else float(v)
+
+
+def _card(v) -> str:
+    return "n/a" if v is None else f"{float(v):.0f}"
+
+
 def generate_radar_chart_image(
     content_score: float,
     speech_score: float,
@@ -132,13 +140,10 @@ def generate_radar_chart_image(
 ) -> io.BytesIO:
     """Generates a high-res Radar/Spider Chart PNG."""
     labels = ["Content Accuracy", "Speech Delivery", "Camera Composure", "Exam Integrity", "Technical Depth"]
-    values = [
-        max(10.0, min(100.0, content_score)),
-        max(10.0, min(100.0, speech_score)),
-        max(10.0, min(100.0, face_score)),
-        max(10.0, min(100.0, integrity_score)),
-        max(10.0, min(100.0, topic_depth)),
-    ]
+    raw = [content_score, speech_score, face_score, integrity_score, topic_depth]
+    # Unmeasured axes are drawn at 0 and labelled, never filled with a default.
+    labels = [f"{l}\n(not measured)" if v is None else l for l, v in zip(labels, raw)]
+    values = [0.0 if v is None else max(0.0, min(100.0, float(v))) for v in raw]
 
     num_vars = len(labels)
     angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
@@ -177,13 +182,17 @@ def generate_timeline_chart_image(per_question_scores: List[Dict[str, Any]]) -> 
     fig.patch.set_facecolor("#ffffff")
     ax.set_facecolor("#f8fafc")
 
-    if not per_question_scores:
-        per_question_scores = [{"question_id": 1, "fused_score": 75.0, "content_score": 75.0, "speech_score": 75.0}]
+    def _v(q, key, module):
+        v = q.get(key)
+        if v is None and isinstance(q.get(module), dict):
+            v = q[module].get("score")
+        return float("nan") if v is None else float(v)  # NaN = gap in the line
 
+    per_question_scores = per_question_scores or []
     q_labels = [f"Q{q.get('question_id', i + 1)}" for i, q in enumerate(per_question_scores)]
-    fused = [float(q.get("fused_score", 70.0)) for q in per_question_scores]
-    content = [float(q.get("content_score", 70.0)) for q in per_question_scores]
-    speech = [float(q.get("speech_score", 70.0)) for q in per_question_scores]
+    fused = [_v(q, "fused_score", "_") for q in per_question_scores]
+    content = [_v(q, "content_score", "content") for q in per_question_scores]
+    speech = [_v(q, "speech_score", "speech_confidence") for q in per_question_scores]
 
     x = np.arange(len(q_labels))
 
@@ -213,11 +222,13 @@ def generate_trend_chart_image(trend_data: Dict[str, Any], current_score: float)
     fig.patch.set_facecolor("#ffffff")
     ax.set_facecolor("#f8fafc")
 
-    recent_scores = trend_data.get("recent_session_scores", [])
-    if not recent_scores:
-        recent_scores = [max(40.0, current_score - 10.0), current_score]
-    elif len(recent_scores) == 1:
-        recent_scores = [recent_scores[0], current_score]
+    # Real history only (comparisons.trend.timeline already includes this session).
+    recent_scores = [
+        float(t["score"]) for t in (trend_data.get("timeline") or [])
+        if isinstance(t, dict) and t.get("score") is not None
+    ]
+    if not recent_scores and current_score is not None:
+        recent_scores = [float(current_score)]
 
     x_labels = [f"Session {i + 1}" for i in range(len(recent_scores))]
     x = np.arange(len(x_labels))
@@ -371,7 +382,7 @@ def build_pdf_report(session_id: int, db: Optional[Session] = None) -> bytes:
         # =====================================================================
         round_type = res_dict.get("round_type", "Technical")
         role = res_dict.get("role", "Software Engineer")
-        overall_score = float(res_dict.get("overall_score", 70.0))
+        overall_score = _opt(res_dict.get("overall_score"))
         classification = res_dict.get("classification", "AVERAGE")
         created_str = (
             session.created_at.strftime("%B %d, %Y")
@@ -412,10 +423,11 @@ def build_pdf_report(session_id: int, db: Optional[Session] = None) -> bytes:
         # =====================================================================
         # EXECUTIVE SUMMARY & COMPOSITE SCORE CARDS
         # =====================================================================
-        content_score = float(res_dict.get("content_score", 70.0))
-        speech_score = float(res_dict.get("speech_score", 70.0))
-        face_score = float(res_dict.get("face_score", 70.0))
-        cohort_pctl = float(res_dict.get("comparisons", {}).get("cohort", {}).get("percentile", 50.0))
+        content_score = _opt(res_dict.get("content_score"))
+        speech_score = _opt(res_dict.get("speech_score"))
+        face_score = _opt(res_dict.get("face_score"))
+        cohort_pctl = _opt((res_dict.get("comparisons") or {}).get("cohort", {}).get("percentile"))
+        cohort_label = f"Top {100.0 - cohort_pctl:.0f}% Cohort" if cohort_pctl is not None else "No cohort yet"
 
         class_color = (
             SUCCESS_COLOR if classification == "STRONG" else (WARNING_COLOR if classification == "AVERAGE" else DANGER_COLOR)
@@ -423,11 +435,11 @@ def build_pdf_report(session_id: int, db: Optional[Session] = None) -> bytes:
 
         score_cards_data = [
             [
-                Paragraph(f"<font size='22' color='{BRAND_ACCENT}'><b>{overall_score:.0f}</b></font><br/><font size='7' color='#64748b'><b>OVERALL (0-100)</b></font>", ParagraphStyle("C1", parent=body_style, alignment=1)),
-                Paragraph(f"<font size='16' color='#0f172a'><b>{content_score:.0f}</b></font><br/><font size='7' color='#64748b'>CONTENT ACCURACY</font>", ParagraphStyle("C2", parent=body_style, alignment=1)),
-                Paragraph(f"<font size='16' color='#0f172a'><b>{speech_score:.0f}</b></font><br/><font size='7' color='#64748b'>SPEECH CONFIDENCE</font>", ParagraphStyle("C3", parent=body_style, alignment=1)),
-                Paragraph(f"<font size='16' color='#0f172a'><b>{face_score:.0f}</b></font><br/><font size='7' color='#64748b'>CAMERA COMPOSURE</font>", ParagraphStyle("C4", parent=body_style, alignment=1)),
-                Paragraph(f"<font size='13' color='{class_color}'><b>{classification}</b></font><br/><font size='7' color='#64748b'>Top {100.0 - cohort_pctl:.0f}% Cohort</font>", ParagraphStyle("C5", parent=body_style, alignment=1)),
+                Paragraph(f"<font size='22' color='{BRAND_ACCENT}'><b>{_card(overall_score)}</b></font><br/><font size='7' color='#64748b'><b>OVERALL (0-100)</b></font>", ParagraphStyle("C1", parent=body_style, alignment=1)),
+                Paragraph(f"<font size='16' color='#0f172a'><b>{_card(content_score)}</b></font><br/><font size='7' color='#64748b'>CONTENT ACCURACY</font>", ParagraphStyle("C2", parent=body_style, alignment=1)),
+                Paragraph(f"<font size='16' color='#0f172a'><b>{_card(speech_score)}</b></font><br/><font size='7' color='#64748b'>SPEECH CONFIDENCE</font>", ParagraphStyle("C3", parent=body_style, alignment=1)),
+                Paragraph(f"<font size='16' color='#0f172a'><b>{_card(face_score)}</b></font><br/><font size='7' color='#64748b'>CAMERA COMPOSURE</font>", ParagraphStyle("C4", parent=body_style, alignment=1)),
+                Paragraph(f"<font size='13' color='{class_color}'><b>{classification}</b></font><br/><font size='7' color='#64748b'>{cohort_label}</font>", ParagraphStyle("C5", parent=body_style, alignment=1)),
             ]
         ]
         score_cards_table = Table(score_cards_data, colWidths=[100, 100, 100, 100, 104])
@@ -470,7 +482,7 @@ def build_pdf_report(session_id: int, db: Optional[Session] = None) -> bytes:
             content_score=content_score,
             speech_score=speech_score,
             face_score=face_score,
-            integrity_score=95.0 if not integrity_events else 75.0,
+            integrity_score=None,
             topic_depth=overall_score,
         )
         timeline_buf = generate_timeline_chart_image(res_dict.get("per_question_scores", []))
@@ -541,7 +553,7 @@ def build_pdf_report(session_id: int, db: Optional[Session] = None) -> bytes:
             q_id = fb.get("question_id", 1)
             topic = fb.get("topic", "General")
             q_text = fb.get("question_text", f"Question #{q_id}")
-            q_score = float(fb.get("score", 70.0))
+            q_score = _opt(fb.get("score"))
             what_good = fb.get("what_was_good", "Covered key technical points.")
             what_missing = fb.get("what_was_missing", "Review production trade-offs.")
             outline = fb.get("sample_answer_outline", "").replace("\n", "<br/>")
@@ -553,14 +565,14 @@ def build_pdf_report(session_id: int, db: Optional[Session] = None) -> bytes:
                     transcript = q_sc.get("transcript", "")
                     break
 
-            q_color = SUCCESS_COLOR if q_score >= 80.0 else (WARNING_COLOR if q_score >= 60.0 else DANGER_COLOR)
+            q_color = BORDER_COLOR if q_score is None else (SUCCESS_COLOR if q_score >= 80.0 else (WARNING_COLOR if q_score >= 60.0 else DANGER_COLOR))
 
             q_flowables = [
                 Table(
                     [
                         [
                             Paragraph(f"<b>Q{q_id}: {topic}</b> — {q_text}", ParagraphStyle("QT", parent=body_bold, fontSize=9.5)),
-                            Paragraph(f"<font color='{q_color}'><b>{q_score:.0f}/100</b></font>", ParagraphStyle("QS", parent=body_bold, alignment=2, fontSize=10)),
+                            Paragraph(f"<font color='{q_color}'><b>{_card(q_score)}/100</b></font>", ParagraphStyle("QS", parent=body_bold, alignment=2, fontSize=10)),
                         ]
                     ],
                     colWidths=[430, 74],

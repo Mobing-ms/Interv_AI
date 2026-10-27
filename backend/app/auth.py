@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import bcrypt
@@ -153,6 +154,89 @@ def decode_guest_token(token: str) -> dict:
         )
 
 
+def authenticate_ws_session(db: Session, session_id: int, token: Optional[str]):
+    """
+    Single authorization check shared by every session WebSocket endpoint.
+
+    Accepts exactly one of:
+      1. the per-session ``session_token`` issued at session creation,
+      2. a user *access* JWT whose subject owns the session,
+      3. a guest JWT whose ``session_id`` claim is this session (guest sessions only).
+
+    Returns the InterviewSession on success, or None. Never raises on bad tokens.
+    """
+    import hmac
+    import logging
+    from app.models import InterviewSession
+
+    log = logging.getLogger("intervai.auth")
+    if not token:
+        return None
+
+    session = db.query(InterviewSession).filter(InterviewSession.id == session_id).first()
+    if not session:
+        return None
+
+    # 1. Per-session token (constant-time compare)
+    if session.session_token and hmac.compare_digest(str(session.session_token), token):
+        return session
+
+    # 2/3. JWTs
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    except jwt.InvalidTokenError:
+        return None
+
+    token_type = payload.get("type")
+    if token_type == "access":
+        try:
+            uid = int(payload.get("sub"))
+        except (TypeError, ValueError):
+            return None
+        if session.user_id is not None and session.user_id == uid:
+            return session
+        return None
+
+    if token_type == "guest_access" and payload.get("is_guest"):
+        if payload.get("session_id") == session_id and bool(session.is_guest):
+            guest_sub = payload.get("sub")
+            if session.guest_id and guest_sub and str(session.guest_id) != str(guest_sub):
+                log.warning("Guest token subject mismatch for session #%d", session_id)
+                return None
+            return session
+    return None
+
+
+def guest_session_ids_proven_by_request(request: Request, body_token: Optional[str] = None) -> set:
+    """
+    Session ids the caller can prove guest ownership of, via a valid guest JWT in
+    the request body, X-Guest-Token header, or guest_token cookie.
+    """
+    import logging
+    proven = set()
+    for candidate in (body_token, request.headers.get("X-Guest-Token"), request.cookies.get("guest_token")):
+        if not candidate:
+            continue
+        try:
+            payload = decode_guest_token(candidate.strip())
+        except HTTPException:
+            logging.getLogger("intervai.auth").info("Ignoring invalid/expired guest token presented for linking")
+            continue
+        sid = payload.get("session_id")
+        if isinstance(sid, int):
+            proven.add(sid)
+    return proven
+
+
+def require_maintenance_token(request: Request) -> None:
+    """Gate for operational endpoints (retention cleanup etc). Disabled unless MAINTENANCE_TOKEN is set."""
+    import hmac
+    supplied = request.headers.get("X-Maintenance-Token", "")
+    expected = settings.MAINTENANCE_TOKEN
+    if not expected or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+
 class AuthContext:
     """
     Represents the authenticated caller context:
@@ -220,7 +304,7 @@ def get_current_user_or_guest(
                 guest_session_id=payload.get("session_id"),
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
     # 3. Try guest_token cookie
     if guest_cookie:
@@ -233,7 +317,7 @@ def get_current_user_or_guest(
                 guest_session_id=payload.get("session_id"),
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

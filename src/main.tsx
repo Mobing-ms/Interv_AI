@@ -4198,6 +4198,8 @@ function Live({ go }: { go: (p: string) => void }) {
 
   const wsRef = useRef<WebSocket | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Set once an answer is submitted so repeat clicks / timer expiry don't send it again.
+  const answerSubmittedRef = useRef(false);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
@@ -4339,7 +4341,8 @@ function Live({ go }: { go: (p: string) => void }) {
           const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
             ? 'audio/webm;codecs=opus'
             : 'audio/webm';
-          const recorder = new MediaRecorder(stream, { mimeType });
+          // Audio-only mimeType needs an audio-only stream; with the camera track attached start() throws NotSupportedError
+          const recorder = new MediaRecorder(new MediaStream(stream.getAudioTracks()), { mimeType });
           mediaRecorderRef.current = recorder;
 
           recorder.ondataavailable = (event) => {
@@ -4441,6 +4444,7 @@ function Live({ go }: { go: (p: string) => void }) {
     setAvatarState('speaking');
 
     const handleSpeechEnded = () => {
+      answerSubmittedRef.current = false;
       setAvatarState('listening');
       // When audio playback ends, frontend sends ready signal;
       // orchestrator then starts the answer timer and recording.
@@ -4461,12 +4465,15 @@ function Live({ go }: { go: (p: string) => void }) {
       audio.onended = () => {
         handleSpeechEnded();
       };
-      audio.onerror = () => {
+      // onerror and play() rejection can both fire for one failure; fall back only once.
+      let fellBack = false;
+      const fallBack = () => {
+        if (fellBack || currentAudioRef.current !== audio) return;
+        fellBack = true;
         fallbackSpeechSynthesis(text, lang, handleSpeechEnded);
       };
-      audio.play().catch(() => {
-        fallbackSpeechSynthesis(text, lang, handleSpeechEnded);
-      });
+      audio.onerror = fallBack;
+      audio.play().catch(fallBack);
     } else {
       fallbackSpeechSynthesis(text, lang, handleSpeechEnded);
     }
@@ -4727,6 +4734,8 @@ function Live({ go }: { go: (p: string) => void }) {
   }, [timerActive, timerSeconds]);
 
   const handleDoneAnswering = () => {
+    if (answerSubmittedRef.current) return;
+    answerSubmittedRef.current = true;
     stopRecordingStreams();
     setTimerActive(false);
     setAvatarState('thinking');
@@ -4734,7 +4743,7 @@ function Live({ go }: { go: (p: string) => void }) {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'answer_ended',
-        text: candidateAnswer || liveTranscript || 'I have explained the key algorithms, trade-offs, and scaling approach.',
+        text: candidateAnswer || liveTranscript || '',
         timestamp: Date.now(),
       }));
     }
@@ -5228,14 +5237,15 @@ function Report({ go, path }: { go: (p: string) => void; path?: string }) {
   };
 
   // Derived metrics with safe fallbacks
-  const overallScore = Math.round(resultData?.overall_score ?? 84);
-  const contentScore = Math.round(resultData?.content_score ?? 88);
-  const speechScore = Math.round(resultData?.speech_score ?? 80);
-  const faceScore = Math.round(resultData?.face_score ?? 82);
-  const classification = resultData?.classification ?? 'STRONG';
+  // Never invent scores: an unmeasured value renders as 0 and the headline says it was not scored
+  const overallScore = Math.round(resultData?.overall_score ?? 0);
+  const contentScore = Math.round(resultData?.content_score ?? 0);
+  const speechScore = Math.round(resultData?.speech_score ?? 0);
+  const faceScore = Math.round(resultData?.face_score ?? 0);
+  const classification = (resultData?.classification ?? 'NOT_SCORED').replace('_', ' ');
   const roundType = resultData?.round_type ?? 'Technical';
   const role = resultData?.role ?? 'Software Engineer';
-  const cohortPctl = Math.round(resultData?.comparisons?.cohort?.percentile ?? 76);
+  const cohortPctl = Math.round(resultData?.comparisons?.cohort?.percentile ?? 0);
 
   const report = reportData?.report;
   const questionsFeedback = report?.per_question_feedback ?? [];

@@ -72,7 +72,7 @@ class VADDetector:
                     if self.vad.is_speech(frame, self.sample_rate):
                         speech_frames += 1
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
             if num_frames > 0 and (speech_frames / num_frames) >= 0.3:
                 return True
 
@@ -113,6 +113,12 @@ class VoiceActivityTracker:
         self.total_speech_duration = 0.0
         self.total_chunks_processed = 0
         self.is_answer_completed = False
+
+    def note_activity(self, now: Optional[float] = None) -> None:
+        """Non-audio activity (typing) restarts the silence clock without counting as speech time."""
+        now = now or time.time()
+        if self.speech_started:
+            self.last_speech_time = now
 
     def feed_audio(
         self,
@@ -420,12 +426,10 @@ class AnswerStorageManager:
     """
 
     def __init__(self, base_dir: Optional[str] = None):
-        default_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "storage",
-            "sessions",
-        )
-        self.base_dir = base_dir or default_dir
+        if not base_dir:
+            from app.config import settings
+            base_dir = settings.data_path("storage", "sessions")
+        self.base_dir = base_dir
         os.makedirs(self.base_dir, exist_ok=True)
 
 
@@ -521,7 +525,7 @@ class AnswerStorageManager:
                 with open(transcript_path, "r", encoding="utf-8") as f:
                     transcript_content = json.load(f)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Suppressed exception", exc_info=True)
 
         return {
             "session_id": session_id,

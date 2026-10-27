@@ -56,6 +56,9 @@ from sqlalchemy.pool import StaticPool
 class TestGuestPracticeMode(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Tests simulate distinct client IPs via X-Forwarded-For (proxy deployment).
+        settings.TRUST_PROXY_HEADERS = True
+        settings.MAINTENANCE_TOKEN = "test-maintenance-token"
         # Create an isolated test SQLite in-memory database with StaticPool
         cls.engine = create_engine(
             "sqlite:///:memory:",
@@ -288,7 +291,8 @@ class TestGuestPracticeMode(unittest.TestCase):
         self.db.commit()
 
         # Run cleanup endpoint
-        cleanup_resp = self.client.post("/guest/cleanup")
+        self.assertEqual(self.client.post("/guest/cleanup").status_code, 403)
+        cleanup_resp = self.client.post("/guest/cleanup", headers={"X-Maintenance-Token": settings.MAINTENANCE_TOKEN})
         self.assertEqual(cleanup_resp.status_code, 200)
         self.assertEqual(cleanup_resp.json()["cleaned_sessions_count"], 1)
 

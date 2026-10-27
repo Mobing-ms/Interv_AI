@@ -32,6 +32,14 @@ from app.auth import create_access_token, hash_password
 client = TestClient(app)
 
 
+
+def _recv(ws):
+    """Next frame, skipping the spoken acknowledgements that arrive while an answer is evaluated."""
+    while True:
+        msg = ws.receive_json()
+        if msg.get("type") != "ack":
+            return msg
+
 class TestEvaluatorAndRouterPhase4(unittest.TestCase):
     def setUp(self):
         db = SessionLocal()
@@ -221,7 +229,9 @@ class TestEvaluatorAndRouterPhase4(unittest.TestCase):
         self.assertTrue(fu_q["is_follow_up"])
         self.assertEqual(fu_q["topic"], "DSA")
         self.assertEqual(fu_q["parent_question_id"], 5)
-        self.assertTrue("shrinkage" in fu_q["text"].lower() or "mechanism" in fu_q["text"].lower())
+        # The deterministic fallback stays neutral and never echoes the evaluator's note.
+        self.assertNotIn("Explain window shrinkage", fu_q["text"])
+        self.assertTrue(fu_q["text"].endswith("?") or fu_q["text"].endswith("."))
 
     # =========================================================================
     # 5. ROUTER PURE FUNCTION: STRICTLY MAX 2 FOLLOW-UPS PER TOPIC
@@ -292,7 +302,7 @@ class TestEvaluatorAndRouterPhase4(unittest.TestCase):
         route1 = decide_route(state, eval_res)
         self.assertEqual(route1["action"], "redirect")
         self.assertTrue(route1["repeat_question"])
-        self.assertIn("refocus", route1["redirect_message"].lower())
+        self.assertIn("ask again", route1["redirect_message"].lower())
 
         # 2nd time off-topic on same question -> Advances to next question (no loop)
         state.question_repeat_count["30"] = 1
@@ -305,19 +315,16 @@ class TestEvaluatorAndRouterPhase4(unittest.TestCase):
 
     def test_closing_inquiry_handling(self):
         """Closing handles candidate questions about tech stack, culture, or wrap-up."""
-        # Candidate asks about tech stack
+        # A real question gets a neutral acknowledgement, never made-up company facts
         ans_stack = handle_closing_inquiry("What tech stack do you use?")
-        self.assertIn("FastAPI", ans_stack["text"])
-        self.assertIn("TypeScript", ans_stack["text"])
+        self.assertIn("good question", ans_stack["text"].lower())
+        self.assertNotIn("FastAPI", ans_stack["text"])
         self.assertTrue(ans_stack["is_closing_complete"])
-
-        # Candidate asks about culture
-        ans_culture = handle_closing_inquiry("Can you tell me about the engineering culture?")
-        self.assertIn("collaborative", ans_culture["text"].lower())
 
         # Candidate has no questions
         ans_none = handle_closing_inquiry("No, that's all. Thank you!")
         self.assertIn("thank you", ans_none["text"].lower())
+        self.assertNotIn("good question", ans_none["text"].lower())
 
     # =========================================================================
     # 9. INTEGRATION: FULL WEBSOCKET EVALUATION & ROUTING LOOP
@@ -337,10 +344,10 @@ class TestEvaluatorAndRouterPhase4(unittest.TestCase):
         sess_token = s_data["session_token"]
 
         with client.websocket_connect(f"/session/{sess_id}/live?token={sess_token}") as ws:
-            ws.receive_json()  # connected
-            ws.receive_json()  # greeting avatar_speak
-            ws.receive_json()  # warmup question
-            ws.receive_json()  # warmup avatar_speak
+            _recv(ws)  # connected
+            _recv(ws)  # greeting avatar_speak
+            _recv(ws)  # warmup question
+            _recv(ws)  # warmup avatar_speak
 
             # 1. Answer warmup
             ws.send_json({
@@ -349,11 +356,11 @@ class TestEvaluatorAndRouterPhase4(unittest.TestCase):
             })
 
             # 2. Server evaluates Warmup and emits Main Question #1
-            q1 = ws.receive_json()
+            q1 = _recv(ws)
             self.assertEqual(q1["type"], "question")
             self.assertFalse(q1.get("is_follow_up", False))
             q1_topic = q1.get("topic", "DSA")
-            _ = ws.receive_json()  # q1 avatar_speak
+            _ = _recv(ws)  # q1 avatar_speak
 
             # 3. Candidate sends a WEAK_VAGUE answer to Q1
             ws.send_json({
@@ -362,11 +369,11 @@ class TestEvaluatorAndRouterPhase4(unittest.TestCase):
             })
 
             # 4. Server evaluates -> WEAK_VAGUE -> Routes to probing follow-up on SAME topic
-            fu_q = ws.receive_json()
+            fu_q = _recv(ws)
             self.assertEqual(fu_q["type"], "question")
             self.assertTrue(fu_q.get("is_follow_up", True))
             self.assertEqual(fu_q.get("topic"), q1_topic)
-            _ = ws.receive_json()  # follow-up avatar_speak
+            _ = _recv(ws)  # follow-up avatar_speak
 
             # 5. Candidate sends a STRONG answer to the follow-up
             ws.send_json({
@@ -379,10 +386,10 @@ class TestEvaluatorAndRouterPhase4(unittest.TestCase):
             })
 
             # 6. Server receives strong answer -> evaluates -> advances to next main question or closing
-            next_msg = ws.receive_json()
+            next_msg = _recv(ws)
             if next_msg["type"] == "question":
                 # Answer next question strongly to finish interview
-                _ = ws.receive_json()  # avatar_speak
+                _ = _recv(ws)  # avatar_speak
                 ws.send_json({
                     "type": "answer_ended",
                     "text": (
@@ -390,17 +397,17 @@ class TestEvaluatorAndRouterPhase4(unittest.TestCase):
                         "to ensure low latency concurrency and fault tolerance."
                     ),
                 })
-                next_msg = ws.receive_json()
+                next_msg = _recv(ws)
 
             # Ensure session reaches round_end / closing
             while next_msg.get("type") != "round_end":
                 if next_msg.get("type") == "question":
-                    _ = ws.receive_json()
+                    _ = _recv(ws)
                     ws.send_json({
                         "type": "answer_ended",
                         "text": "Scalable distributed architecture with low latency and fault tolerance.",
                     })
-                next_msg = ws.receive_json()
+                next_msg = _recv(ws)
 
             self.assertEqual(next_msg["type"], "round_end")
             summary = next_msg["summary"]

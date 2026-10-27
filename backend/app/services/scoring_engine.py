@@ -57,6 +57,92 @@ def detect_concrete_examples(transcript: str, marker_keywords: List[str]) -> Dic
     }
 
 
+
+# =============================================================================
+# MISSING-SIGNAL HANDLING
+# =============================================================================
+
+FACE_FACTOR_METRICS = {
+    "eye_contact": ["avg_eye_contact"],
+    "expression_stability": ["avg_emotion_valence"],
+    "head_pose_stability": ["avg_head_yaw", "avg_head_pitch", "avg_head_roll"],
+    "posture": ["avg_posture_alignment"],
+    "fidgeting": ["avg_movement_level"],
+}
+
+SPEECH_FACTOR_METRICS = {
+    "speech_pace": ["avg_speech_pace_wpm"],
+    "filler_rate": ["filler_rate"],
+    "pause_pattern": ["total_pauses", "avg_pause_length"],
+    "pitch_variability": ["pitch_variance"],
+    "volume_variability": ["volume_variability"],
+    "clarity": ["avg_clarity_proxy"],
+}
+
+
+def _f(d: Dict[str, Any], key: str, default: float) -> float:
+    """Value for the scoring formula; unmeasured factors are dropped later by _restrict_to_measured."""
+    v = (d or {}).get(key)
+    return float(default) if v is None else float(v)
+
+
+def _restrict_to_measured(result: Dict[str, Any], signals: Dict[str, Any], factor_metrics: Dict[str, List[str]], label: str) -> Dict[str, Any]:
+    """
+    Keeps only factors whose input metrics were actually measured and rescales the
+    score over those factors. If nothing was measured the module score is None,
+    never a made-up default.
+    """
+    signals = signals or {}
+    measured = [f for f, keys in factor_metrics.items() if all(signals.get(k) is not None for k in keys)]
+    unmeasured = [f for f in factor_metrics if f not in measured]
+    result["measured_factors"] = measured
+    result["unmeasured_factors"] = unmeasured
+    if not unmeasured:
+        result["measured"] = True
+        return result
+    if not measured:
+        return {
+            "score": None,
+            "measured": False,
+            "measured_factors": [],
+            "unmeasured_factors": unmeasured,
+            "sub_scores": {},
+            "max_sub_scores": {},
+            "explanations": [],
+            "deductions": [],
+            "raw_metrics": {},
+            "note": f"{label} signals were not measured for this answer.",
+        }
+    keep = set(measured)
+    sub_scores = {k: v for k, v in result["sub_scores"].items() if k in keep}
+    max_sub = {k: v for k, v in result["max_sub_scores"].items() if k in keep}
+    total_max = sum(max_sub.values())
+    score = round(100.0 * sum(sub_scores.values()) / total_max, 1) if total_max > 0 else None
+    result.update({
+        "score": score,
+        "measured": True,
+        "sub_scores": sub_scores,
+        "max_sub_scores": max_sub,
+        "explanations": [e for e in result["explanations"] if e.get("factor") in keep],
+        "deductions": [d for d in result["deductions"] if d.get("factor") in keep],
+        "note": f"Not measured (excluded from score): {', '.join(unmeasured)}.",
+    })
+    return result
+
+
+def _weighted_available(parts: List[tuple]) -> Optional[float]:
+    """Weighted mean over (score, weight) pairs whose score is not None, weights renormalized."""
+    avail = [(sc, w) for sc, w in parts if sc is not None and w > 0]
+    total_w = sum(w for _, w in avail)
+    if not avail or total_w <= 0:
+        return None
+    return sum(sc * w for sc, w in avail) / total_w
+
+
+def _mean_or_none(vals: List[Optional[float]]) -> Optional[float]:
+    vals = [v for v in vals if v is not None]
+    return round(sum(vals) / len(vals), 1) if vals else None
+
 # =============================================================================
 # MODULE 1: FACE AND POSTURE SCORE (PURE FUNCTION)
 # =============================================================================
@@ -95,13 +181,13 @@ def compute_face_and_posture_score(
     max_sub_scores: Dict[str, float] = {}
 
     # Extract raw signal values with resilient defaults
-    raw_eye = float(face_signals.get("avg_eye_contact", 0.85))
-    raw_yaw = float(face_signals.get("avg_head_yaw", 0.0))
-    raw_pitch = float(face_signals.get("avg_head_pitch", 0.0))
-    raw_roll = float(face_signals.get("avg_head_roll", 0.0))
-    raw_emotion = float(face_signals.get("avg_emotion_valence", 0.15))
-    raw_posture = float(face_signals.get("avg_posture_alignment", 0.88))
-    raw_movement = float(face_signals.get("avg_movement_level", 0.04))
+    raw_eye = _f(face_signals, "avg_eye_contact", 0.85)
+    raw_yaw = _f(face_signals, "avg_head_yaw", 0.0)
+    raw_pitch = _f(face_signals, "avg_head_pitch", 0.0)
+    raw_roll = _f(face_signals, "avg_head_roll", 0.0)
+    raw_emotion = _f(face_signals, "avg_emotion_valence", 0.15)
+    raw_posture = _f(face_signals, "avg_posture_alignment", 0.88)
+    raw_movement = _f(face_signals, "avg_movement_level", 0.04)
 
     # 1. Eye-contact percentage vs calibration baseline
     max_eye_pts = cfg.weight_eye_contact * 100.0
@@ -267,7 +353,7 @@ def compute_face_and_posture_score(
     total_score = sum(sub_scores.values())
     total_score = max(0.0, min(100.0, round(total_score, 1)))
 
-    return {
+    return _restrict_to_measured({
         "score": total_score,
         "sub_scores": sub_scores,
         "max_sub_scores": max_sub_scores,
@@ -282,7 +368,7 @@ def compute_face_and_posture_score(
             "avg_posture_alignment": raw_posture,
             "avg_movement_level": raw_movement,
         },
-    }
+    }, face_signals, FACE_FACTOR_METRICS, "Face/posture")
 
 
 # =============================================================================
@@ -321,14 +407,14 @@ def compute_speech_confidence_score(
     max_sub_scores: Dict[str, float] = {}
 
     # Extract raw metrics with sensible defaults
-    raw_pace = float(speech_signals.get("avg_speech_pace_wpm", 135.0))
-    raw_filler_rate = float(speech_signals.get("filler_rate", 0.015))
-    raw_filler_count = int(speech_signals.get("total_fillers", 1))
-    raw_pauses = int(speech_signals.get("total_pauses", 2))
-    raw_pause_len = float(speech_signals.get("avg_pause_length", 1.2))
-    raw_pitch_var = float(speech_signals.get("pitch_variance", 35.0))
-    raw_vol_var = float(speech_signals.get("volume_variability", 22.0))
-    raw_clarity = float(speech_signals.get("avg_clarity_proxy", 0.88))
+    raw_pace = _f(speech_signals, "avg_speech_pace_wpm", 135.0)
+    raw_filler_rate = _f(speech_signals, "filler_rate", 0.015)
+    raw_filler_count = int(_f(speech_signals, "total_fillers", 1))
+    raw_pauses = int(_f(speech_signals, "total_pauses", 2))
+    raw_pause_len = _f(speech_signals, "avg_pause_length", 1.2)
+    raw_pitch_var = _f(speech_signals, "pitch_variance", 35.0)
+    raw_vol_var = _f(speech_signals, "volume_variability", 22.0)
+    raw_clarity = _f(speech_signals, "avg_clarity_proxy", 0.88)
 
     # 1. Speaking Pace (WPM)
     max_pace_pts = cfg.weight_pace * 100.0
@@ -516,7 +602,7 @@ def compute_speech_confidence_score(
     total_score = sum(sub_scores.values())
     total_score = max(0.0, min(100.0, round(total_score, 1)))
 
-    return {
+    return _restrict_to_measured({
         "score": total_score,
         "sub_scores": sub_scores,
         "max_sub_scores": max_sub_scores,
@@ -532,7 +618,7 @@ def compute_speech_confidence_score(
             "volume_variability": raw_vol_var,
             "avg_clarity_proxy": raw_clarity,
         },
-    }
+    }, speech_signals, SPEECH_FACTOR_METRICS, "Speech")
 
 
 # =============================================================================
@@ -566,15 +652,42 @@ def compute_content_score(
     cfg = config or ContentRubricConfig()
     q_meta = question_metadata or {}
 
+    evaluator_scores = evaluator_scores or {}
+    if not any(evaluator_scores.get(k) is not None for k in ("correctness", "relevance", "depth", "overall_score")):
+        return {
+            "score": None,
+            "measured": False,
+            "sub_scores": {},
+            "max_sub_scores": {},
+            "explanations": [],
+            "deductions": [],
+            "raw_metrics": {},
+            "note": "This answer was not evaluated.",
+        }
+
     explanations: List[Dict[str, Any]] = []
     deductions: List[Dict[str, Any]] = []
     sub_scores: Dict[str, float] = {}
     max_sub_scores: Dict[str, float] = {}
 
     # Extract evaluator metrics (each scored 0.0 - 10.0 in evaluator_service)
-    raw_acc = float(evaluator_scores.get("correctness") or evaluator_scores.get("relevance") or 7.0)
-    raw_depth = float(evaluator_scores.get("depth", 7.0))
-    raw_relevance = float(evaluator_scores.get("relevance", 7.0))
+    # A 0 is a real score, so take the first value that exists rather than the first truthy one
+    def _first(*keys: str) -> Optional[float]:
+        for k in keys:
+            if evaluator_scores.get(k) is not None:
+                return float(evaluator_scores[k])
+        return None
+
+    # Only an overall score (0-100 or 0-10) known: it stands in for the missing sub-scores
+    overall = evaluator_scores.get("overall_score")
+    overall10 = None if overall is None else (float(overall) / 10.0 if float(overall) > 10 else float(overall))
+    raw_acc = _first("correctness", "relevance", "depth")
+    raw_acc = overall10 if raw_acc is None else raw_acc
+    raw_depth = _first("depth", "correctness")
+    raw_depth = raw_acc if raw_depth is None else raw_depth
+    raw_relevance = _first("relevance", "correctness")
+    raw_relevance = raw_acc if raw_relevance is None else raw_relevance
+    raw_acc, raw_depth, raw_relevance = (v or 0.0 for v in (raw_acc, raw_depth, raw_relevance))
     classification = str(evaluator_scores.get("classification", "OK")).upper()
     justification = str(evaluator_scores.get("justification", ""))
 
@@ -840,6 +953,16 @@ def compute_content_score(
 
     total_score = sum(sub_scores.values())
     total_score = max(0.0, min(100.0, round(total_score, 1)))
+    # Keywords and examples can't rescue an answer that doesn't address the question
+    if classification == "OFF_TOPIC" or raw_relevance <= 0:
+        cap = round(raw_acc * 10.0, 1)
+        if total_score > cap:
+            deductions.append({
+                "factor": "relevance", "earned_points": cap, "max_points": total_score,
+                "deduction": round(cap - total_score, 1), "metric_value": classification,
+                "reason": "The answer did not address the question, so other credit was not counted.",
+            })
+            total_score = cap
 
     return {
         "score": total_score,
@@ -865,6 +988,16 @@ def compute_content_score(
 # =============================================================================
 # PER-QUESTION COMPOSITE SCORER (PURE FUNCTION)
 # =============================================================================
+
+MIN_ANSWER_WORDS = 3
+
+
+def _not_measured(note: str) -> Dict[str, Any]:
+    return {
+        "score": None, "measured": False, "sub_scores": {}, "max_sub_scores": {},
+        "explanations": [], "deductions": [], "raw_metrics": {}, "note": note,
+    }
+
 
 def compute_question_score(
     question_aligned_data: Dict[str, Any],
@@ -896,26 +1029,33 @@ def compute_question_score(
     eval_scores = question_aligned_data.get("evaluator_scores", {})
     timings = question_aligned_data.get("word_timings", [])
 
+    answered = len(re.findall(r"\w+", transcript or "")) >= MIN_ANSWER_WORDS
+
     # 1. Face & Posture Module
     face_res = compute_face_and_posture_score(face_sigs, baseline=baseline, config=cfg.face_posture)
 
-    # 2. Speech Confidence Module
-    speech_res = compute_speech_confidence_score(speech_sigs, transcript=transcript, word_timings=timings, config=cfg.speech_confidence)
-
-    # 3. Content Rubric Module
-    content_res = compute_content_score(eval_scores, question_metadata=question_aligned_data, transcript=transcript, config=cfg.content_rubric)
+    if answered:
+        # 2. Speech Confidence Module
+        speech_res = compute_speech_confidence_score(speech_sigs, transcript=transcript, word_timings=timings, config=cfg.speech_confidence)
+        # 3. Content Rubric Module
+        content_res = compute_content_score(eval_scores, question_metadata=question_aligned_data, transcript=transcript, config=cfg.content_rubric)
+    else:
+        # No answer: nothing was said to judge for delivery, and the content earns nothing
+        speech_res = _not_measured("No answer was given, so delivery was not measured.")
+        content_res = {**_not_measured("No answer was given."), "score": 0.0, "measured": True}
 
     # Composite weighted average
     w_content = cfg.session_weights.content_weight
     w_speech = cfg.session_weights.speech_confidence_weight
     w_face = cfg.session_weights.face_posture_weight
 
-    composite = (
-        (content_res["score"] * w_content) +
-        (speech_res["score"] * w_speech) +
-        (face_res["score"] * w_face)
-    )
-    composite = max(0.0, min(100.0, round(composite, 1)))
+    # Unmeasured modules (score None) are excluded and the weights renormalized.
+    composite = _weighted_available([
+        (content_res["score"], w_content),
+        (speech_res["score"], w_speech),
+        (face_res["score"], w_face),
+    ])
+    composite = max(0.0, min(100.0, round(composite, 1))) if composite is not None else None
 
     all_deductions = []
     for d in (content_res["deductions"] + speech_res["deductions"] + face_res["deductions"]):
@@ -940,6 +1080,7 @@ def compute_question_score(
         "question_text": question_aligned_data.get("question_text", ""),
         "topic": topic,
         "composite_score": composite,
+        "answered": answered,
         "face_posture": face_res,
         "speech_confidence": speech_res,
         "content": content_res,
@@ -984,16 +1125,16 @@ def compute_session_scores(
     questions = aligned_session_data.get("questions", [])
 
     if not questions:
-        # Default fallback for empty session
+        # Nothing was answered: nothing to score.
         return {
             "session_id": sess_id,
             "overall_scores": {
-                "face_posture_score": 0.0,
-                "speech_confidence_score": 0.0,
-                "content_score": 0.0,
-                "composite_score": 0.0,
+                "face_posture_score": None,
+                "speech_confidence_score": None,
+                "content_score": None,
+                "composite_score": None,
             },
-            "classification": "WEAK",
+            "classification": "NOT_SCORED",
             "per_question_breakdown": [],
             "top_deductions": [],
             "key_strengths": [],
@@ -1017,23 +1158,20 @@ def compute_session_scores(
         composite_scores.append(q_res["composite_score"])
         all_session_deductions.extend(q_res["all_deductions"])
 
-    avg_face = round(sum(face_scores) / len(face_scores), 1)
-    avg_speech = round(sum(speech_scores) / len(speech_scores), 1)
-    avg_content = round(sum(content_scores) / len(content_scores), 1)
+    avg_face = _mean_or_none(face_scores)
+    avg_speech = _mean_or_none(speech_scores)
+    avg_content = _mean_or_none(content_scores)
 
     w_content = cfg.session_weights.content_weight
     w_speech = cfg.session_weights.speech_confidence_weight
     w_face = cfg.session_weights.face_posture_weight
 
-    overall_composite = round(
-        (avg_content * w_content) +
-        (avg_speech * w_speech) +
-        (avg_face * w_face),
-        1
-    )
-    overall_composite = max(0.0, min(100.0, overall_composite))
+    overall_composite = _weighted_available([(avg_content, w_content), (avg_speech, w_speech), (avg_face, w_face)])
+    overall_composite = max(0.0, min(100.0, round(overall_composite, 1))) if overall_composite is not None else None
 
-    if overall_composite >= 80.0:
+    if overall_composite is None:
+        classification = "NOT_SCORED"
+    elif overall_composite >= 80.0:
         classification = "STRONG"
     elif overall_composite >= 60.0:
         classification = "AVERAGE"
@@ -1045,11 +1183,11 @@ def compute_session_scores(
 
     # Extract distinct key strengths and areas for improvement
     key_strengths: List[str] = []
-    if avg_content >= 80.0:
+    if avg_content is not None and avg_content >= 80.0:
         key_strengths.append(f"Strong content proficiency ({avg_content}/100) with accurate technical depth.")
-    if avg_speech >= 80.0:
+    if avg_speech is not None and avg_speech >= 80.0:
         key_strengths.append(f"Confident, articulate vocal pacing ({avg_speech}/100) with minimal fillers.")
-    if avg_face >= 80.0:
+    if avg_face is not None and avg_face >= 80.0:
         key_strengths.append(f"Exceptional eye contact and composed camera presence ({avg_face}/100).")
     if not key_strengths:
         key_strengths.append("Demonstrated foundational familiarity with interview topics.")
@@ -1083,4 +1221,5 @@ def compute_session_scores(
         "key_strengths": key_strengths,
         "areas_for_improvement": areas_for_improvement,
         "total_questions": len(questions),
+        "not_measured": [name for name, v in (("face_posture", avg_face), ("speech_confidence", avg_speech)) if v is None],
     }

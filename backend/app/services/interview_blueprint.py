@@ -367,7 +367,10 @@ def build_interview_blueprint(
         raw_topics = get_technical_topics()
 
     # 4. Integrate User Focus Overrides & Candidate Weak Areas
-    # If the user specified focus topics in config, ensure they are in the list
+    # Topics the candidate chose define the round, together with their CV projects;
+    # the generic auto-picked topics are dropped.
+    if focus_topics_override:
+        raw_topics = [t for t in raw_topics if t["name"].startswith("Project Deep-Dive")]
     existing_topic_names = {t["name"].lower().strip() for t in raw_topics}
     for custom_focus in focus_topics_override:
         if custom_focus.lower().strip() not in existing_topic_names:
