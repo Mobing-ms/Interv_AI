@@ -53,6 +53,7 @@ class SessionStateData(BaseModel):
     pending_followup: Optional[Dict[str, Any]] = None
     is_connected: bool = False
     current_question_nudged: bool = False
+    current_question_reprompted: bool = False  # asked "say that again" once after an unheard answer
     current_question_speech_detected: bool = False
     question_transcripts: Dict[int, Dict[str, Any]] = Field(default_factory=dict)
     question_repeat_count: Dict[str, int] = Field(default_factory=dict)

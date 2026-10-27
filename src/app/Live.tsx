@@ -154,6 +154,9 @@ export default function Live() {
       };
       r.onerror = (e: any) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') setNoSpeechApi(true);
+        // network: Brave/Chromium/offline can't reach Google's recogniser; audio-capture: no mic for it
+        else if (e.error === 'network' || e.error === 'audio-capture')
+          flash('Live transcript unavailable', 'This browser can\'t transcribe speech here. Use Google Chrome, or type your answer in the box.', 8000);
       };
       // Chrome stops recognition after a pause; restart only this recognizer while still answering.
       r.onend = () => { if (recording.current && recog.current === r) { try { r.start(); } catch {} } };
@@ -313,6 +316,12 @@ export default function Live() {
             }
             break;
           }
+          case 'retry_answer':
+            // Ava heard speech but got no words: stop, ask again, and listen afresh when she finishes.
+            stopAnswer();
+            submitted.current = false;
+            speak(m.text, m.audio_url, m.language);
+            break;
           case 'timer_started':
             setTimeLeft(m.time_limit || 120);
             setTiming(true);
